@@ -7,8 +7,8 @@ use nom::{
     Err as BaseErr,
 };
 
-use crate::attribute_info::types::StackMapFrame::*;
 use crate::attribute_info::*;
+use crate::{attribute_info::types::StackMapFrame::*};
 
 // Using a type alias here evades a Clippy warning about complex types.
 type Err<E> = BaseErr<Error<E>>;
@@ -90,6 +90,38 @@ pub fn parameters_parser(input: &[u8]) -> Result<(&[u8], ParameterAttribute), Er
         ParameterAttribute {
             name_index,
             access_flags,
+        },
+    ))
+}
+
+pub fn inner_classes_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], InnerClassesAttribute), Err<&[u8]>> {
+    let (input, number_of_classes) = be_u16(input)?;
+    let (input, classes) = count(inner_class_info_parser, number_of_classes as usize)(input)?;
+    let ret = (
+        input,
+        InnerClassesAttribute {
+            number_of_classes,
+            classes,
+        },
+    );
+
+    Ok(ret)
+}
+
+pub fn inner_class_info_parser(input: &[u8]) -> Result<(&[u8], InnerClassInfo), Err<&[u8]>> {
+    let (input, inner_class_info_index) = be_u16(input)?;
+    let (input, outer_class_info_index) = be_u16(input)?;
+    let (input, inner_name_index) = be_u16(input)?;
+    let (input, inner_class_access_flags) = be_u16(input)?;
+    Ok((
+        input,
+        InnerClassInfo {
+            inner_class_info_index,
+            outer_class_info_index,
+            inner_name_index,
+            inner_class_access_flags,
         },
     ))
 }

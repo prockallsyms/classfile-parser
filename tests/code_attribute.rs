@@ -1,6 +1,8 @@
 extern crate classfile_parser;
 
-use classfile_parser::attribute_info::{code_attribute_parser, method_parameters_attribute_parser};
+use classfile_parser::attribute_info::{
+    InnerClassAccessFlags, code_attribute_parser, inner_classes_attribute_parser, method_parameters_attribute_parser
+};
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
     code_parser, instruction_parser, Instruction, LocalVariableTableAttribute,
@@ -105,7 +107,7 @@ fn method_parameters() {
     assert_eq!(
         lookup_string(
             &class,
-            method_parameters.parameters.get(0).unwrap().name_index
+            method_parameters.parameters.first().unwrap().name_index
         ),
         Some("a".to_string())
     );
@@ -116,6 +118,59 @@ fn method_parameters() {
         ),
         Some("b".to_string())
     );
+}
+
+#[test]
+fn inner_classes() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    dbg!(&class);
+
+    for attr in &class.attributes {
+        match lookup_string(&class, attr.attribute_name_index) {
+            Some(x) if x == "InnerClasses" => {
+                let (_, inner_class_attrs) = inner_classes_attribute_parser(&attr.info).unwrap();
+
+                assert_eq!(
+                    inner_class_attrs.number_of_classes,
+                    4
+                );
+
+                assert_eq!(
+                    inner_class_attrs.number_of_classes,
+                    inner_class_attrs.classes.len() as u16
+                );
+
+                for c in inner_class_attrs.classes {
+                    dbg!(&class.const_pool[(c.inner_class_info_index-1) as usize]);
+
+                    // only == 0 when this class is a top-level class or interface, or when it's
+                    // a local class or an anonymous class.
+                    if c.outer_class_info_index != 0 {
+                        assert_ne!(c.inner_class_info_index, c.outer_class_info_index);
+                        
+                        dbg!(&class.const_pool[(c.outer_class_info_index-1) as usize]);
+                    }
+
+                    // only == 0 when this class is anonymous
+                    if c.inner_name_index != 0 {
+                        dbg!(&class.const_pool[(c.inner_name_index-1) as usize]);
+                    }
+
+                    dbg!(InnerClassAccessFlags::from_bits_truncate(
+                        c.inner_class_access_flags
+                    ));
+                }
+                //uncomment to see dbg output from above
+                //assert_eq!(1, 2);
+            },
+            Some(_) => {},
+            None => panic!(
+                "Could not find attribute name for index {}",
+                attr.attribute_name_index
+            ),
+        }
+    }
 }
 
 #[test]

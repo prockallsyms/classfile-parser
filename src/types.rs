@@ -33,6 +33,7 @@ bitflags! {
         const SYNTHETIC = 0x1000;  //	Declared synthetic; not present in the source code.
         const ANNOTATION = 0x2000; //	Declared as an annotation type.
         const ENUM = 0x4000;       //	Declared as an enum type.
+        const MODULE = 0x8000;     //	Declared as a module type.
     }
 }
 

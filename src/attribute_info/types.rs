@@ -38,6 +38,36 @@ pub struct ParameterAttribute {
 }
 
 #[derive(Clone, Debug)]
+pub struct InnerClassesAttribute {
+    pub number_of_classes: u16,
+    pub classes: Vec<InnerClassInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InnerClassInfo {
+    pub inner_class_info_index: u16,
+    pub outer_class_info_index: u16,
+    pub inner_name_index: u16,
+    pub inner_class_access_flags: u16,
+}
+
+bitflags! {
+    #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+    pub struct InnerClassAccessFlags: u16 {
+        const PUBLIC = 0x0001;     //	Declared public; may be accessed from outside its package.
+        const PRIVATE = 0x0002;    //	Declared private; may not be accessed from outside its package.
+        const PROTECTED = 0x0004;  //	Declared praotected; may only be accessed within children.
+        const STATIC = 0x0008;     //	Declared static.
+        const FINAL = 0x0010;      //	Declared final; no subclasses allowed.
+        const INTERFACE = 0x0200;  //	Is an interface, not a class.
+        const ABSTRACT = 0x0400;   //	Declared abstract; must not be instantiated.
+        const SYNTHETIC = 0x1000;  //	Declared synthetic; not present in the source code.
+        const ANNOTATION = 0x2000; //	Declared as an annotation type.
+        const ENUM = 0x4000;       //	Declared as an enum type.
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum VerificationTypeInfo {
     Top,
     Integer,
