@@ -5,12 +5,12 @@ extern crate classfile_parser;
 use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    InnerClassAccessFlags, code_attribute_parser, enclosing_method_parser,
-    inner_classes_attribute_parser, method_parameters_attribute_parser,
+    code_attribute_parser, enclosing_method_parser, inner_classes_attribute_parser,
+    method_parameters_attribute_parser, InnerClassAccessFlags,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
+    code_parser, instruction_parser, Instruction, LocalVariableTableAttribute,
 };
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
@@ -36,19 +36,28 @@ fn test_wide() {
 #[test]
 fn test_alignment() {
     let instructions = vec![
-        (3, vec![
-            0xaa, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
-        ]),
-        (0, vec![
-            0xaa, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
-        ]),
+        (
+            3,
+            vec![
+                0xaa, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
+            ],
+        ),
+        (
+            0,
+            vec![
+                0xaa, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
+            ],
+        ),
     ];
-    let expected = Ok((&[][..], Instruction::Tableswitch {
-        default: 10,
-        low: 20,
-        high: 21,
-        offsets: vec![30, 31],
-    }));
+    let expected = Ok((
+        &[][..],
+        Instruction::Tableswitch {
+            default: 10,
+            low: 20,
+            high: 21,
+            offsets: vec![30, 31],
+        },
+    ));
     for (address, instruction) in instructions {
         assert_eq!(expected, instruction_parser(&instruction, address));
     }
@@ -57,10 +66,10 @@ fn test_alignment() {
 #[test]
 fn test_incomplete() {
     let code = &[0x59, 0x59, 0xc4, 0x15]; // dup, dup, <incomplete iload/wide>
-    let expected = Ok((&[0xc4, 0x15][..], vec![
-        (0, Instruction::Dup),
-        (1, Instruction::Dup),
-    ]));
+    let expected = Ok((
+        &[0xc4, 0x15][..],
+        vec![(0, Instruction::Dup), (1, Instruction::Dup)],
+    ));
     assert_eq!(expected, code_parser(code));
 }
 
@@ -238,6 +247,30 @@ fn enclosing_method() {
 }
 
 #[test]
+fn synthetic_attribute() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses$2.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    let synthetic_attr = class
+        .attributes
+        .iter()
+        .filter(
+            |attribute_info| match lookup_string(&class, attribute_info.attribute_name_index) {
+                Some(s) if s == "Synethic" => true,
+                Some(_) => false,
+                None => panic!(
+                    "Could not find attribute name for index {}",
+                    attribute_info.attribute_name_index
+                ),
+            },
+        )
+        .collect::<Vec<_>>();
+
+    for attr in &synthetic_attr {
+        assert_eq!(attr.attribute_length, 0);
+    }
+}
+
+#[test]
 fn local_variable_table() {
     // The class was not compiled with "javac -g"
     let class_bytes = include_bytes!("../java-assets/compiled-classes/LocalVariableTable.class");
@@ -283,11 +316,14 @@ fn local_variable_table() {
         .collect();
 
     // All used types in method code block of last method
-    assert_eq!(types, vec![
-        "LLocalVariableTable;".to_string(),
-        "Ljava/util/HashMap;".to_string(),
-        "I".to_string()
-    ]);
+    assert_eq!(
+        types,
+        vec![
+            "LLocalVariableTable;".to_string(),
+            "Ljava/util/HashMap;".to_string(),
+            "I".to_string()
+        ]
+    );
 }
 
 #[test]

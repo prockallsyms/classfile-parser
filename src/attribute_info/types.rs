@@ -73,6 +73,11 @@ pub struct EnclosingMethodAttribute {
     pub method_index: u16,
 }
 
+// in all reality this struct isn't required b/c it's zero sized
+// "Synthetic" is a marker attribute
+#[derive(Clone, Debug)]
+pub struct SyntheticAttribute {}
+
 #[derive(Clone, Debug)]
 pub enum VerificationTypeInfo {
     Top,
