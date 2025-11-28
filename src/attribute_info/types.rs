@@ -68,6 +68,12 @@ bitflags! {
 }
 
 #[derive(Clone, Debug)]
+pub struct EnclosingMethodAttribute {
+    pub class_index: u16,
+    pub method_index: u16,
+}
+
+#[derive(Clone, Debug)]
 pub enum VerificationTypeInfo {
     Top,
     Integer,

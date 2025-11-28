@@ -105,6 +105,17 @@ pub fn inner_class_info_parser(input: &[u8]) -> Result<(&[u8], InnerClassInfo), 
     }))
 }
 
+pub fn enclosing_method_parser(
+    input: &[u8],
+) -> Result<(&[u8], EnclosingMethodAttribute), Err<&[u8]>> {
+    let (input, class_index) = be_u16(input)?;
+    let (input, method_index) = be_u16(input)?;
+    Ok((input, EnclosingMethodAttribute {
+        class_index,
+        method_index,
+    }))
+}
+
 fn same_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
     success(SameFrame { frame_type })(input)
 }

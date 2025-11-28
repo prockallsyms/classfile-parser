@@ -1,13 +1,18 @@
+#![feature(assert_matches)]
+
 extern crate classfile_parser;
 
+use std::assert_matches::assert_matches;
+
 use classfile_parser::attribute_info::{
-    InnerClassAccessFlags, code_attribute_parser, inner_classes_attribute_parser,
-    method_parameters_attribute_parser,
+    InnerClassAccessFlags, code_attribute_parser, enclosing_method_parser,
+    inner_classes_attribute_parser, method_parameters_attribute_parser,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
     Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
 };
+use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
 
 #[test]
@@ -116,7 +121,6 @@ fn method_parameters() {
 fn inner_classes() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses.class");
     let (_, class) = class_parser(class_bytes).unwrap();
-    dbg!(&class);
 
     for attr in &class.attributes {
         match lookup_string(&class, attr.attribute_name_index) {
@@ -150,6 +154,77 @@ fn inner_classes() {
                         c.inner_class_access_flags
                     ));
                 }
+                //uncomment to see dbg output from above
+                //assert_eq!(1, 2);
+            }
+            Some(_) => {}
+            None => panic!(
+                "Could not find attribute name for index {}",
+                attr.attribute_name_index
+            ),
+        }
+    }
+}
+
+#[test]
+// test for enclosing method attribute, which only applies to local and anonymous classes
+fn enclosing_method() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses$2.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+
+    for attr in &class.attributes {
+        match lookup_string(&class, attr.attribute_name_index) {
+            Some(x) if x == "EnclosingMethod" => {
+                assert_eq!(attr.attribute_length, 4);
+
+                let (_, inner_class_attrs) = enclosing_method_parser(&attr.info).unwrap();
+
+                match &class.const_pool[(inner_class_attrs.class_index - 1) as usize] {
+                    classfile_parser::constant_info::ConstantInfo::Class(class_constant) => {
+                        let _expected = String::from("InnerClasses");
+                        assert_matches!(
+                            &class.const_pool[(class_constant.name_index - 1) as usize],
+                            ConstantInfo::Utf8(classfile_parser::constant_info::Utf8Constant {
+                                utf8_string: _expected,
+                                bytes: _,
+                            })
+                        );
+                        dbg!(&class.const_pool[(class_constant.name_index - 1) as usize]);
+                    }
+                    _ => panic!("Expected Class constant"),
+                }
+
+                match &class.const_pool[(inner_class_attrs.method_index - 1) as usize] {
+                    classfile_parser::constant_info::ConstantInfo::NameAndType(
+                        name_and_type_constant,
+                    ) => {
+                        let mut _expected = String::from("sayHello");
+                        assert_matches!(
+                            &class.const_pool[(name_and_type_constant.name_index - 1) as usize],
+                            ConstantInfo::Utf8(classfile_parser::constant_info::Utf8Constant {
+                                utf8_string: _expected,
+                                bytes: _,
+                            })
+                        );
+                        dbg!(&class.const_pool[(name_and_type_constant.name_index - 1) as usize]);
+
+                        _expected = String::from("()V");
+                        assert_matches!(
+                            &class.const_pool
+                                [(name_and_type_constant.descriptor_index - 1) as usize],
+                            ConstantInfo::Utf8(classfile_parser::constant_info::Utf8Constant {
+                                utf8_string: _expected,
+                                bytes: _,
+                            })
+                        );
+                        dbg!(
+                            &class.const_pool
+                                [(name_and_type_constant.descriptor_index - 1) as usize]
+                        );
+                    }
+                    _ => panic!("Expected NameAndType constant"),
+                }
+
                 //uncomment to see dbg output from above
                 //assert_eq!(1, 2);
             }
