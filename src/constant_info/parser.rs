@@ -1,10 +1,10 @@
 use crate::constant_info::*;
 use nom::{
+    Err,
     bytes::complete::take,
     combinator::map,
     error::{Error, ErrorKind},
-    number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u8},
-    Err,
+    number::complete::{be_f32, be_f64, be_i32, be_i64, be_u8, be_u16},
 };
 
 fn utf8_constant(input: &[u8]) -> Utf8Constant {

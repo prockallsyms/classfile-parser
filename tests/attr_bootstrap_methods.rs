@@ -11,7 +11,19 @@ fn test_attribute_bootstrap_methods() {
         "../java-assets/compiled-classes/BootstrapMethods.class"
     )) {
         Ok((_, c)) => {
-            println!("Valid class file, version {},{} const_pool({}), this=const[{}], super=const[{}], interfaces({}), fields({}), methods({}), attributes({}), access({:?})", c.major_version, c.minor_version, c.const_pool_size, c.this_class, c.super_class, c.interfaces_count, c.fields_count, c.methods_count, c.attributes_count, c.access_flags);
+            println!(
+                "Valid class file, version {},{} const_pool({}), this=const[{}], super=const[{}], interfaces({}), fields({}), methods({}), attributes({}), access({:?})",
+                c.major_version,
+                c.minor_version,
+                c.const_pool_size,
+                c.this_class,
+                c.super_class,
+                c.interfaces_count,
+                c.fields_count,
+                c.methods_count,
+                c.attributes_count,
+                c.access_flags
+            );
 
             let mut bootstrap_method_const_index = 0;
 
@@ -70,7 +82,10 @@ fn should_have_no_bootstrap_method_attr_if_no_invoke_dynamic() {
                 match *const_item {
                     ConstantInfo::Utf8(ref c) => {
                         if c.utf8_string == "BootstrapMethods" {
-                            assert!(false, "Should not have found a BootstrapMethods constant in a class not requiring it")
+                            assert!(
+                                false,
+                                "Should not have found a BootstrapMethods constant in a class not requiring it"
+                            )
                         }
                     }
                     _ => {}

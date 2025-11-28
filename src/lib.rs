@@ -1,7 +1,7 @@
 //! A parser for [Java Classfiles](https://docs.oracle.com/javase/specs/jvms/se10/html/jvms-4.html)
 
 use std::fs::File;
-use std::io::{prelude::*, BufReader};
+use std::io::{BufReader, prelude::*};
 use std::path::Path;
 
 #[macro_use]
@@ -70,7 +70,10 @@ pub fn parse_class_from_reader<T: Read>(reader: &mut T) -> Result<ClassFile, Str
     match parsed_class {
         Ok((a, c)) => {
             if !a.is_empty() {
-                eprintln!("Warning: not all bytes were consumed when parsing classfile, {} bytes remaining", a.len());
+                eprintln!(
+                    "Warning: not all bytes were consumed when parsing classfile, {} bytes remaining",
+                    a.len()
+                );
             }
 
             Ok(c)

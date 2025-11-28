@@ -1,11 +1,12 @@
 extern crate classfile_parser;
 
 use classfile_parser::attribute_info::{
-    InnerClassAccessFlags, code_attribute_parser, inner_classes_attribute_parser, method_parameters_attribute_parser
+    InnerClassAccessFlags, code_attribute_parser, inner_classes_attribute_parser,
+    method_parameters_attribute_parser,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    code_parser, instruction_parser, Instruction, LocalVariableTableAttribute,
+    Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
 };
 use classfile_parser::method_info::MethodAccessFlags;
 
@@ -30,28 +31,19 @@ fn test_wide() {
 #[test]
 fn test_alignment() {
     let instructions = vec![
-        (
-            3,
-            vec![
-                0xaa, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
-            ],
-        ),
-        (
-            0,
-            vec![
-                0xaa, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
-            ],
-        ),
+        (3, vec![
+            0xaa, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
+        ]),
+        (0, vec![
+            0xaa, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 21, 0, 0, 0, 30, 0, 0, 0, 31,
+        ]),
     ];
-    let expected = Ok((
-        &[][..],
-        Instruction::Tableswitch {
-            default: 10,
-            low: 20,
-            high: 21,
-            offsets: vec![30, 31],
-        },
-    ));
+    let expected = Ok((&[][..], Instruction::Tableswitch {
+        default: 10,
+        low: 20,
+        high: 21,
+        offsets: vec![30, 31],
+    }));
     for (address, instruction) in instructions {
         assert_eq!(expected, instruction_parser(&instruction, address));
     }
@@ -60,10 +52,10 @@ fn test_alignment() {
 #[test]
 fn test_incomplete() {
     let code = &[0x59, 0x59, 0xc4, 0x15]; // dup, dup, <incomplete iload/wide>
-    let expected = Ok((
-        &[0xc4, 0x15][..],
-        vec![(0, Instruction::Dup), (1, Instruction::Dup)],
-    ));
+    let expected = Ok((&[0xc4, 0x15][..], vec![
+        (0, Instruction::Dup),
+        (1, Instruction::Dup),
+    ]));
     assert_eq!(expected, code_parser(code));
 }
 
@@ -131,10 +123,7 @@ fn inner_classes() {
             Some(x) if x == "InnerClasses" => {
                 let (_, inner_class_attrs) = inner_classes_attribute_parser(&attr.info).unwrap();
 
-                assert_eq!(
-                    inner_class_attrs.number_of_classes,
-                    4
-                );
+                assert_eq!(inner_class_attrs.number_of_classes, 4);
 
                 assert_eq!(
                     inner_class_attrs.number_of_classes,
@@ -142,19 +131,19 @@ fn inner_classes() {
                 );
 
                 for c in inner_class_attrs.classes {
-                    dbg!(&class.const_pool[(c.inner_class_info_index-1) as usize]);
+                    dbg!(&class.const_pool[(c.inner_class_info_index - 1) as usize]);
 
                     // only == 0 when this class is a top-level class or interface, or when it's
                     // a local class or an anonymous class.
                     if c.outer_class_info_index != 0 {
                         assert_ne!(c.inner_class_info_index, c.outer_class_info_index);
-                        
-                        dbg!(&class.const_pool[(c.outer_class_info_index-1) as usize]);
+
+                        dbg!(&class.const_pool[(c.outer_class_info_index - 1) as usize]);
                     }
 
                     // only == 0 when this class is anonymous
                     if c.inner_name_index != 0 {
-                        dbg!(&class.const_pool[(c.inner_name_index-1) as usize]);
+                        dbg!(&class.const_pool[(c.inner_name_index - 1) as usize]);
                     }
 
                     dbg!(InnerClassAccessFlags::from_bits_truncate(
@@ -163,8 +152,8 @@ fn inner_classes() {
                 }
                 //uncomment to see dbg output from above
                 //assert_eq!(1, 2);
-            },
-            Some(_) => {},
+            }
+            Some(_) => {}
             None => panic!(
                 "Could not find attribute name for index {}",
                 attr.attribute_name_index
@@ -219,14 +208,11 @@ fn local_variable_table() {
         .collect();
 
     // All used types in method code block of last method
-    assert_eq!(
-        types,
-        vec![
-            "LLocalVariableTable;".to_string(),
-            "Ljava/util/HashMap;".to_string(),
-            "I".to_string()
-        ]
-    );
+    assert_eq!(types, vec![
+        "LLocalVariableTable;".to_string(),
+        "Ljava/util/HashMap;".to_string(),
+        "I".to_string()
+    ]);
 }
 
 #[test]

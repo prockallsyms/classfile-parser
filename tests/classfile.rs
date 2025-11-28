@@ -10,7 +10,19 @@ fn test_valid_class() {
     let res = class_parser(valid_class);
     match res {
         Result::Ok((_, c)) => {
-            println!("Valid class file, version {},{} const_pool({}), this=const[{}], super=const[{}], interfaces({}), fields({}), methods({}), attributes({}), access({:?})", c.major_version, c.minor_version, c.const_pool_size, c.this_class, c.super_class, c.interfaces_count, c.fields_count, c.methods_count, c.attributes_count, c.access_flags);
+            println!(
+                "Valid class file, version {},{} const_pool({}), this=const[{}], super=const[{}], interfaces({}), fields({}), methods({}), attributes({}), access({:?})",
+                c.major_version,
+                c.minor_version,
+                c.const_pool_size,
+                c.this_class,
+                c.super_class,
+                c.interfaces_count,
+                c.fields_count,
+                c.methods_count,
+                c.attributes_count,
+                c.access_flags
+            );
 
             let mut code_const_index = 0;
 
@@ -92,13 +104,11 @@ fn test_utf_string_constants() {
                     if c.utf8_string == "2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm" {
                         found_utf_maths_string = true;
                     }
-                    if c.utf8_string
-                        == "ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ"
+                    if c.utf8_string == "ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ"
                     {
                         found_utf_runes_string = true;
                     }
-                    if c.utf8_string == "⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌"
-                    {
+                    if c.utf8_string == "⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌" {
                         found_utf_braille_string = true;
                     }
                     if c.utf8_string == "\0𠜎" {
@@ -127,7 +137,9 @@ fn test_utf_string_constants() {
 fn test_malformed_class() {
     let malformed_class = include_bytes!("../java-assets/compiled-classes/malformed.class");
     let res = class_parser(malformed_class);
-    if let Result::Ok((_, _)) = res { panic!("The file is not valid and shouldn't be parsed") };
+    if let Result::Ok((_, _)) = res {
+        panic!("The file is not valid and shouldn't be parsed")
+    };
 }
 
 // #[test]

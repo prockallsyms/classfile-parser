@@ -1,12 +1,12 @@
 use crate::code_attribute::types::Instruction;
 use nom::{
+    Err as BaseErr, IResult, Offset,
     bytes::complete::{tag, take},
     combinator::{complete, fail, map, success},
     error::Error,
     multi::{count, many0},
-    number::complete::{be_i16, be_i32, be_i8, be_u16, be_u32, be_u8},
+    number::complete::{be_i8, be_i16, be_i32, be_u8, be_u16, be_u32},
     sequence::{pair, preceded, tuple},
-    Err as BaseErr, IResult, Offset,
 };
 
 use super::{LocalVariableTableAttribute, LocalVariableTableItem};
@@ -38,15 +38,12 @@ fn tableswitch_parser(input: &[u8]) -> IResult<&[u8], Instruction> {
     let (input, low) = be_i32(input)?;
     let (input, high) = be_i32(input)?;
     let (input, offsets) = count(be_i32, (high - low + 1) as usize)(input)?;
-    Ok((
-        input,
-        Instruction::Tableswitch {
-            default,
-            low,
-            high,
-            offsets,
-        },
-    ))
+    Ok((input, Instruction::Tableswitch {
+        default,
+        low,
+        high,
+        offsets,
+    }))
 }
 
 pub fn code_parser(outer_input: &[u8]) -> IResult<&[u8], Vec<(usize, Instruction)>> {
@@ -303,13 +300,10 @@ pub fn local_variable_table_parser(
         variable_table_item_parser,
         local_variable_table_length as usize,
     )(input)?;
-    Ok((
-        input,
-        LocalVariableTableAttribute {
-            local_variable_table_length,
-            items,
-        },
-    ))
+    Ok((input, LocalVariableTableAttribute {
+        local_variable_table_length,
+        items,
+    }))
 }
 
 pub fn variable_table_item_parser(
@@ -320,14 +314,11 @@ pub fn variable_table_item_parser(
     let (input, name_index) = be_u16(input)?;
     let (input, descriptor_index) = be_u16(input)?;
     let (input, index) = be_u16(input)?;
-    Ok((
-        input,
-        LocalVariableTableItem {
-            start_pc,
-            length,
-            name_index,
-            descriptor_index,
-            index,
-        },
-    ))
+    Ok((input, LocalVariableTableItem {
+        start_pc,
+        length,
+        name_index,
+        descriptor_index,
+        index,
+    }))
 }
