@@ -79,6 +79,11 @@ pub struct EnclosingMethodAttribute {
 pub struct SyntheticAttribute {}
 
 #[derive(Clone, Debug)]
+pub struct SignatureAttribute {
+    pub signature_index: u16,
+}
+
+#[derive(Clone, Debug)]
 pub enum VerificationTypeInfo {
     Top,
     Integer,

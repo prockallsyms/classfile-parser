@@ -1,10 +1,10 @@
 use nom::{
-    Err as BaseErr,
     bytes::complete::take,
     combinator::{map, success},
     error::{Error, ErrorKind},
     multi::count,
-    number::complete::{be_u8, be_u16, be_u32},
+    number::complete::{be_u16, be_u32, be_u8},
+    Err as BaseErr,
 };
 
 use crate::attribute_info::types::StackMapFrame::*;
@@ -17,11 +17,14 @@ pub fn attribute_parser(input: &[u8]) -> Result<(&[u8], AttributeInfo), Err<&[u8
     let (input, attribute_name_index) = be_u16(input)?;
     let (input, attribute_length) = be_u32(input)?;
     let (input, info) = take(attribute_length)(input)?;
-    Ok((input, AttributeInfo {
-        attribute_name_index,
-        attribute_length,
-        info: info.to_owned(),
-    }))
+    Ok((
+        input,
+        AttributeInfo {
+            attribute_name_index,
+            attribute_length,
+            info: info.to_owned(),
+        },
+    ))
 }
 
 pub fn exception_entry_parser(input: &[u8]) -> Result<(&[u8], ExceptionEntry), Err<&[u8]>> {
@@ -29,12 +32,15 @@ pub fn exception_entry_parser(input: &[u8]) -> Result<(&[u8], ExceptionEntry), E
     let (input, end_pc) = be_u16(input)?;
     let (input, handler_pc) = be_u16(input)?;
     let (input, catch_type) = be_u16(input)?;
-    Ok((input, ExceptionEntry {
-        start_pc,
-        end_pc,
-        handler_pc,
-        catch_type,
-    }))
+    Ok((
+        input,
+        ExceptionEntry {
+            start_pc,
+            end_pc,
+            handler_pc,
+            catch_type,
+        },
+    ))
 }
 
 pub fn code_attribute_parser(input: &[u8]) -> Result<(&[u8], CodeAttribute), Err<&[u8]>> {
@@ -47,16 +53,19 @@ pub fn code_attribute_parser(input: &[u8]) -> Result<(&[u8], CodeAttribute), Err
         count(exception_entry_parser, exception_table_length as usize)(input)?;
     let (input, attributes_count) = be_u16(input)?;
     let (input, attributes) = count(attribute_parser, attributes_count as usize)(input)?;
-    Ok((input, CodeAttribute {
-        max_stack,
-        max_locals,
-        code_length,
-        code: code.to_owned(),
-        exception_table_length,
-        exception_table,
-        attributes_count,
-        attributes,
-    }))
+    Ok((
+        input,
+        CodeAttribute {
+            max_stack,
+            max_locals,
+            code_length,
+            code: code.to_owned(),
+            exception_table_length,
+            exception_table,
+            attributes_count,
+            attributes,
+        },
+    ))
 }
 
 pub fn method_parameters_attribute_parser(
@@ -64,19 +73,25 @@ pub fn method_parameters_attribute_parser(
 ) -> Result<(&[u8], MethodParametersAttribute), Err<&[u8]>> {
     let (input, parameters_count) = be_u8(input)?;
     let (input, parameters) = count(parameters_parser, parameters_count as usize)(input)?;
-    Ok((input, MethodParametersAttribute {
-        parameters_count,
-        parameters,
-    }))
+    Ok((
+        input,
+        MethodParametersAttribute {
+            parameters_count,
+            parameters,
+        },
+    ))
 }
 
 pub fn parameters_parser(input: &[u8]) -> Result<(&[u8], ParameterAttribute), Err<&[u8]>> {
     let (input, name_index) = be_u16(input)?;
     let (input, access_flags) = be_u16(input)?;
-    Ok((input, ParameterAttribute {
-        name_index,
-        access_flags,
-    }))
+    Ok((
+        input,
+        ParameterAttribute {
+            name_index,
+            access_flags,
+        },
+    ))
 }
 
 pub fn inner_classes_attribute_parser(
@@ -84,10 +99,13 @@ pub fn inner_classes_attribute_parser(
 ) -> Result<(&[u8], InnerClassesAttribute), Err<&[u8]>> {
     let (input, number_of_classes) = be_u16(input)?;
     let (input, classes) = count(inner_class_info_parser, number_of_classes as usize)(input)?;
-    let ret = (input, InnerClassesAttribute {
-        number_of_classes,
-        classes,
-    });
+    let ret = (
+        input,
+        InnerClassesAttribute {
+            number_of_classes,
+            classes,
+        },
+    );
 
     Ok(ret)
 }
@@ -97,23 +115,34 @@ pub fn inner_class_info_parser(input: &[u8]) -> Result<(&[u8], InnerClassInfo), 
     let (input, outer_class_info_index) = be_u16(input)?;
     let (input, inner_name_index) = be_u16(input)?;
     let (input, inner_class_access_flags) = be_u16(input)?;
-    Ok((input, InnerClassInfo {
-        inner_class_info_index,
-        outer_class_info_index,
-        inner_name_index,
-        inner_class_access_flags,
-    }))
+    Ok((
+        input,
+        InnerClassInfo {
+            inner_class_info_index,
+            outer_class_info_index,
+            inner_name_index,
+            inner_class_access_flags,
+        },
+    ))
 }
 
-pub fn enclosing_method_parser(
+pub fn enclosing_method_attribute_parser(
     input: &[u8],
 ) -> Result<(&[u8], EnclosingMethodAttribute), Err<&[u8]>> {
     let (input, class_index) = be_u16(input)?;
     let (input, method_index) = be_u16(input)?;
-    Ok((input, EnclosingMethodAttribute {
-        class_index,
-        method_index,
-    }))
+    Ok((
+        input,
+        EnclosingMethodAttribute {
+            class_index,
+            method_index,
+        },
+    ))
+}
+
+pub fn signature_attribute_parser(input: &[u8]) -> Result<(&[u8], SignatureAttribute), Err<&[u8]>> {
+    let (input, signature_index) = be_u16(input)?;
+    Ok((input, SignatureAttribute { signature_index }))
 }
 
 fn same_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
@@ -152,19 +181,25 @@ fn same_locals_1_stack_item_frame_extended_parser(
 ) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
     let (input, offset_delta) = be_u16(input)?;
     let (input, stack) = verification_type_parser(input)?;
-    Ok((input, SameLocals1StackItemFrameExtended {
-        frame_type,
-        offset_delta,
-        stack,
-    }))
+    Ok((
+        input,
+        SameLocals1StackItemFrameExtended {
+            frame_type,
+            offset_delta,
+            stack,
+        },
+    ))
 }
 
 fn chop_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
     let (input, offset_delta) = be_u16(input)?;
-    Ok((input, ChopFrame {
-        frame_type,
-        offset_delta,
-    }))
+    Ok((
+        input,
+        ChopFrame {
+            frame_type,
+            offset_delta,
+        },
+    ))
 }
 
 fn same_frame_extended_parser(
@@ -172,20 +207,26 @@ fn same_frame_extended_parser(
     frame_type: u8,
 ) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
     let (input, offset_delta) = be_u16(input)?;
-    Ok((input, SameFrameExtended {
-        frame_type,
-        offset_delta,
-    }))
+    Ok((
+        input,
+        SameFrameExtended {
+            frame_type,
+            offset_delta,
+        },
+    ))
 }
 
 fn append_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
     let (input, offset_delta) = be_u16(input)?;
     let (input, locals) = count(verification_type_parser, (frame_type - 251) as usize)(input)?;
-    Ok((input, AppendFrame {
-        frame_type,
-        offset_delta,
-        locals,
-    }))
+    Ok((
+        input,
+        AppendFrame {
+            frame_type,
+            offset_delta,
+            locals,
+        },
+    ))
 }
 
 fn full_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
@@ -194,14 +235,17 @@ fn full_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFra
     let (input, locals) = count(verification_type_parser, number_of_locals as usize)(input)?;
     let (input, number_of_stack_items) = be_u16(input)?;
     let (input, stack) = count(verification_type_parser, number_of_stack_items as usize)(input)?;
-    Ok((input, FullFrame {
-        frame_type,
-        offset_delta,
-        number_of_locals,
-        locals,
-        number_of_stack_items,
-        stack,
-    }))
+    Ok((
+        input,
+        FullFrame {
+            frame_type,
+            offset_delta,
+            number_of_locals,
+            locals,
+            number_of_stack_items,
+            stack,
+        },
+    ))
 }
 
 fn stack_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
@@ -228,10 +272,13 @@ pub fn stack_map_table_attribute_parser(
 ) -> Result<(&[u8], StackMapTableAttribute), Err<&[u8]>> {
     let (input, number_of_entries) = be_u16(input)?;
     let (input, entries) = count(stack_map_frame_entry_parser, number_of_entries as usize)(input)?;
-    Ok((input, StackMapTableAttribute {
-        number_of_entries,
-        entries,
-    }))
+    Ok((
+        input,
+        StackMapTableAttribute {
+            number_of_entries,
+            entries,
+        },
+    ))
 }
 
 pub fn exceptions_attribute_parser(
@@ -239,30 +286,39 @@ pub fn exceptions_attribute_parser(
 ) -> Result<(&[u8], ExceptionsAttribute), Err<&[u8]>> {
     let (input, exception_table_length) = be_u16(input)?;
     let (input, exception_table) = count(be_u16, exception_table_length as usize)(input)?;
-    Ok((input, ExceptionsAttribute {
-        exception_table_length,
-        exception_table,
-    }))
+    Ok((
+        input,
+        ExceptionsAttribute {
+            exception_table_length,
+            exception_table,
+        },
+    ))
 }
 
 pub fn constant_value_attribute_parser(
     input: &[u8],
 ) -> Result<(&[u8], ConstantValueAttribute), Err<&[u8]>> {
     let (input, constant_value_index) = be_u16(input)?;
-    Ok((input, ConstantValueAttribute {
-        constant_value_index,
-    }))
+    Ok((
+        input,
+        ConstantValueAttribute {
+            constant_value_index,
+        },
+    ))
 }
 
 fn bootstrap_method_parser(input: &[u8]) -> Result<(&[u8], BootstrapMethod), Err<&[u8]>> {
     let (input, bootstrap_method_ref) = be_u16(input)?;
     let (input, num_bootstrap_arguments) = be_u16(input)?;
     let (input, bootstrap_arguments) = count(be_u16, num_bootstrap_arguments as usize)(input)?;
-    Ok((input, BootstrapMethod {
-        bootstrap_method_ref,
-        num_bootstrap_arguments,
-        bootstrap_arguments,
-    }))
+    Ok((
+        input,
+        BootstrapMethod {
+            bootstrap_method_ref,
+            num_bootstrap_arguments,
+            bootstrap_arguments,
+        },
+    ))
 }
 
 pub fn bootstrap_methods_attribute_parser(
@@ -271,10 +327,13 @@ pub fn bootstrap_methods_attribute_parser(
     let (input, num_bootstrap_methods) = be_u16(input)?;
     let (input, bootstrap_methods) =
         count(bootstrap_method_parser, num_bootstrap_methods as usize)(input)?;
-    Ok((input, BootstrapMethodsAttribute {
-        num_bootstrap_methods,
-        bootstrap_methods,
-    }))
+    Ok((
+        input,
+        BootstrapMethodsAttribute {
+            num_bootstrap_methods,
+            bootstrap_methods,
+        },
+    ))
 }
 
 pub fn sourcefile_attribute_parser(

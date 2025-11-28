@@ -5,8 +5,8 @@ extern crate classfile_parser;
 use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    code_attribute_parser, enclosing_method_parser, inner_classes_attribute_parser,
-    method_parameters_attribute_parser, InnerClassAccessFlags,
+    code_attribute_parser, enclosing_method_attribute_parser, inner_classes_attribute_parser,
+    method_parameters_attribute_parser, signature_attribute_parser, InnerClassAccessFlags,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
@@ -164,7 +164,7 @@ fn inner_classes() {
                     ));
                 }
                 //uncomment to see dbg output from above
-                //assert_eq!(1, 2);
+                //assert!(false);
             }
             Some(_) => {}
             None => panic!(
@@ -186,7 +186,7 @@ fn enclosing_method() {
             Some(x) if x == "EnclosingMethod" => {
                 assert_eq!(attr.attribute_length, 4);
 
-                let (_, inner_class_attrs) = enclosing_method_parser(&attr.info).unwrap();
+                let (_, inner_class_attrs) = enclosing_method_attribute_parser(&attr.info).unwrap();
 
                 match &class.const_pool[(inner_class_attrs.class_index - 1) as usize] {
                     classfile_parser::constant_info::ConstantInfo::Class(class_constant) => {
@@ -235,7 +235,7 @@ fn enclosing_method() {
                 }
 
                 //uncomment to see dbg output from above
-                //assert_eq!(1, 2);
+                //assert!(false);
             }
             Some(_) => {}
             None => panic!(
@@ -250,7 +250,7 @@ fn enclosing_method() {
 fn synthetic_attribute() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses$2.class");
     let (_, class) = class_parser(class_bytes).unwrap();
-    let synthetic_attr = class
+    let synthetic_attrs = class
         .attributes
         .iter()
         .filter(
@@ -265,9 +265,41 @@ fn synthetic_attribute() {
         )
         .collect::<Vec<_>>();
 
-    for attr in &synthetic_attr {
+    for attr in &synthetic_attrs {
         assert_eq!(attr.attribute_length, 0);
     }
+}
+
+//works on both method attributes and ClassFile attributes
+#[test]
+fn signature_attribute() {
+    let class_bytes =
+        include_bytes!("../java-assets/compiled-classes/BootstrapMethods.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    let signature_attrs = class
+        .methods
+        .iter()
+        .flat_map(|method_info| &method_info.attributes)
+        .filter(
+            |attribute_info| match lookup_string(&class, attribute_info.attribute_name_index) {
+                Some(s) if s == "Signature" => {eprintln!("Got a signature attr!"); true},
+                Some(_) => false,
+                None => panic!(
+                    "Could not find attribute name for index {}",
+                    attribute_info.attribute_name_index
+                ),
+            },
+        )
+        .collect::<Vec<_>>();
+
+    for attr in &signature_attrs {
+        let (_, signature_attr) = signature_attribute_parser(&attr.info).unwrap();
+        let signature_string = lookup_string(&class, signature_attr.signature_index).unwrap();
+        dbg!(signature_string);
+    }
+
+    //uncomment to see dbg output from above
+    //assert!(false);
 }
 
 #[test]
