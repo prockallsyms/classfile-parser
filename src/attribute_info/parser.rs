@@ -145,6 +145,100 @@ pub fn signature_attribute_parser(input: &[u8]) -> Result<(&[u8], SignatureAttri
     Ok((input, SignatureAttribute { signature_index }))
 }
 
+pub fn runtime_visible_annotations_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], RuntimeVisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+    let (input, num_annotations) = be_u16(input)?;
+    let (input, annotations) = count(annotation_parser, num_annotations as usize)(input)?;
+    Ok((
+        input,
+        RuntimeVisibleTypeAnnotationsAttribute {
+            num_annotations,
+            annotations,
+        },
+    ))
+}
+
+fn annotation_parser(input: &[u8]) -> Result<(&[u8], RuntimeAnnotation), Err<&[u8]>> {
+    let (input, type_index) = be_u16(input)?;
+    let (input, num_element_value_pairs) = be_u16(input)?;
+    eprintln!("Parsing annotation with type index = {}, and {} element value pairs", type_index, num_element_value_pairs);
+    let (input, element_value_pairs) =
+        count(element_value_pair_parser, num_element_value_pairs as usize)(input)?;
+    Ok((
+        input,
+        RuntimeAnnotation {
+            type_index,
+            num_element_value_pairs,
+            element_value_pairs,
+        },
+    ))
+}
+
+fn element_value_pair_parser(input: &[u8]) -> Result<(&[u8], ElementValuePair), Err<&[u8]>> {
+    let (input, element_name_index) = be_u16(input)?;
+    let (input, value) = element_value_parser(input)?;
+    Ok((
+        input,
+        ElementValuePair {
+            element_name_index,
+            value,
+        },
+    ))
+}
+
+fn array_value_parser(input: &[u8]) -> Result<(&[u8], ElementArrayValue), Err<&[u8]>> {
+    let (input, num_values) = be_u16(input)?;
+    let (input, values) = count(element_value_parser, num_values as usize)(input)?;
+    Ok((input, ElementArrayValue { num_values, values }))
+}
+
+fn element_value_parser(input: &[u8]) -> Result<(&[u8], ElementValue), Err<&[u8]>> {
+    let (input, tag) = be_u8(input)?;
+    eprintln!("Element value parsing: tag = {}", tag as char);
+
+    match tag as char {
+        'B' | 'C' | 'I' | 'S' | 'Z' | 'D' | 'F' | 'J' | 's'  => {
+            let (input, const_value_index) = be_u16(input)?;
+            eprintln!("Element value parsing: const_value_index = {}", const_value_index);
+            Ok((input, ElementValue::ConstValueIndex { tag: tag as char, value: const_value_index }))
+        }
+        'e' => {
+            let (input, enum_const_value) = enum_const_value_parser(input)?;
+            eprintln!("Element value parsing: enum_const_value = {:?}", enum_const_value);
+            Ok((input, ElementValue::EnumConst(enum_const_value)))
+        }
+        'c' => {
+            let (input, class_info_index) = be_u16(input)?;
+            eprintln!("Element value parsing: class_info_index = {}", class_info_index);
+            Ok((input, ElementValue::ClassInfoIndex(class_info_index)))
+        }
+        '@' => {
+            let (input, annotation_value) = annotation_parser(input)?;
+            eprintln!("Element value parsing: annotation_value = {:?}", annotation_value);
+            Ok((input, ElementValue::AnnotationValue(annotation_value)))
+        }
+        '[' => {
+            let (input, array_value) = array_value_parser(input)?;
+            eprintln!("Element value parsing: array_value = {:?}", array_value);
+            Ok((input, ElementValue::ElementArray(array_value)))
+        }
+        _ => Result::Err(Err::Error(error_position!(input, ErrorKind::NoneOf))),
+    }
+}
+
+fn enum_const_value_parser(input: &[u8]) -> Result<(&[u8], EnumConstValue), Err<&[u8]>> {
+    let (input, type_name_index) = be_u16(input)?;
+    let (input, const_name_index) = be_u16(input)?;
+    Ok((
+        input,
+        EnumConstValue {
+            type_name_index,
+            const_name_index,
+        },
+    ))
+}
+
 fn same_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
     success(SameFrame { frame_type })(input)
 }

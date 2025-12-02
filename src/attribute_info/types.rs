@@ -89,6 +89,47 @@ pub struct SignatureAttribute {
 }
 
 #[derive(Clone, Debug)]
+pub struct RuntimeVisibleTypeAnnotationsAttribute {
+    pub num_annotations: u16,
+    pub annotations: Vec<RuntimeAnnotation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeAnnotation {
+    pub type_index: u16,
+    pub num_element_value_pairs: u16,
+    pub element_value_pairs: Vec<ElementValuePair>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ElementValuePair {
+    pub element_name_index: u16,
+    pub value: ElementValue,
+}
+
+#[derive(Clone, Debug)]
+pub enum ElementValue {
+    // pub tag: u8,
+    ConstValueIndex { tag: char, value: u16 },
+    EnumConst(EnumConstValue),
+    ClassInfoIndex(u16),
+    AnnotationValue(RuntimeAnnotation),
+    ElementArray(ElementArrayValue),
+}
+
+#[derive(Clone, Debug)]
+pub struct ElementArrayValue {
+    pub num_values: u16,
+    pub values: Vec<ElementValue>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumConstValue {
+    pub type_name_index: u16,
+    pub const_name_index: u16,
+}
+
+#[derive(Clone, Debug)]
 pub enum VerificationTypeInfo {
     Top,
     Integer,
