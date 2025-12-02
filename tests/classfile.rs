@@ -30,7 +30,7 @@ fn test_valid_class() {
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
                 if let ConstantInfo::Utf8(ref c) = *const_item {
-                    if c.utf8_string == "Code" {
+                    if c.utf8_string.to_string() == "Code" {
                         code_const_index = (const_index + 1) as u16;
                     }
                 }
@@ -101,20 +101,23 @@ fn test_utf_string_constants() {
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
                 if let ConstantInfo::Utf8(ref c) = *const_item {
-                    if c.utf8_string == "2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm" {
+                    if c.utf8_string.to_string() == "2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm"
+                    {
                         found_utf_maths_string = true;
                     }
-                    if c.utf8_string == "ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ"
+                    if c.utf8_string.to_string()
+                        == "ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ"
                     {
                         found_utf_runes_string = true;
                     }
-                    if c.utf8_string == "⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌" {
+                    if c.utf8_string.to_string() == "⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌"
+                    {
                         found_utf_braille_string = true;
                     }
-                    if c.utf8_string == "\0𠜎" {
+                    if c.utf8_string.to_string() == "\0𠜎" {
                         found_utf_modified_string = true;
                     }
-                    if c.utf8_string == "X���X" && c.bytes.len() == 5 {
+                    if c.utf8_string.to_string() == "X���X" && c.utf8_string.len() == 5 {
                         found_utf_unpaired_string = true;
                     }
                 }

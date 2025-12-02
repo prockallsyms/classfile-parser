@@ -46,21 +46,24 @@ pub fn class_parser(input: &[u8]) -> IResult<&[u8], ClassFile> {
     let (input, methods) = count(method_parser, methods_count as usize)(input)?;
     let (input, attributes_count) = be_u16(input)?;
     let (input, attributes) = count(attribute_parser, attributes_count as usize)(input)?;
-    Ok((input, ClassFile {
-        minor_version,
-        major_version,
-        const_pool_size,
-        const_pool,
-        access_flags: ClassAccessFlags::from_bits_truncate(access_flags),
-        this_class,
-        super_class,
-        interfaces_count,
-        interfaces,
-        fields_count,
-        fields,
-        methods_count,
-        methods,
-        attributes_count,
-        attributes,
-    }))
+    Ok((
+        input,
+        ClassFile {
+            minor_version,
+            major_version,
+            const_pool_size,
+            const_pool,
+            access_flags: ClassAccessFlags::from_bits_truncate(access_flags),
+            this_class,
+            super_class,
+            interfaces_count,
+            interfaces,
+            fields_count,
+            fields,
+            methods_count,
+            methods,
+            attributes_count,
+            attributes,
+        },
+    ))
 }

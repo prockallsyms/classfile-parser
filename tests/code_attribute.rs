@@ -93,7 +93,9 @@ fn test_class() {
 fn lookup_string(c: &classfile_parser::ClassFile, index: u16) -> Option<String> {
     let con = &c.const_pool[(index - 1) as usize];
     match con {
-        classfile_parser::constant_info::ConstantInfo::Utf8(utf8) => Some(utf8.utf8_string.clone()),
+        classfile_parser::constant_info::ConstantInfo::Utf8(utf8) => {
+            Some(utf8.utf8_string.to_string())
+        }
         _ => None,
     }
 }
@@ -195,7 +197,6 @@ fn enclosing_method() {
                             &class.const_pool[(class_constant.name_index - 1) as usize],
                             ConstantInfo::Utf8(classfile_parser::constant_info::Utf8Constant {
                                 utf8_string: _expected,
-                                bytes: _,
                             })
                         );
                         dbg!(&class.const_pool[(class_constant.name_index - 1) as usize]);
@@ -212,7 +213,6 @@ fn enclosing_method() {
                             &class.const_pool[(name_and_type_constant.name_index - 1) as usize],
                             ConstantInfo::Utf8(classfile_parser::constant_info::Utf8Constant {
                                 utf8_string: _expected,
-                                bytes: _,
                             })
                         );
                         dbg!(&class.const_pool[(name_and_type_constant.name_index - 1) as usize]);
@@ -223,7 +223,6 @@ fn enclosing_method() {
                                 [(name_and_type_constant.descriptor_index - 1) as usize],
                             ConstantInfo::Utf8(classfile_parser::constant_info::Utf8Constant {
                                 utf8_string: _expected,
-                                bytes: _,
                             })
                         );
                         dbg!(
@@ -273,8 +272,7 @@ fn synthetic_attribute() {
 //works on both method attributes and ClassFile attributes
 #[test]
 fn signature_attribute() {
-    let class_bytes =
-        include_bytes!("../java-assets/compiled-classes/BootstrapMethods.class");
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/BootstrapMethods.class");
     let (_, class) = class_parser(class_bytes).unwrap();
     let signature_attrs = class
         .methods
@@ -282,7 +280,10 @@ fn signature_attribute() {
         .flat_map(|method_info| &method_info.attributes)
         .filter(
             |attribute_info| match lookup_string(&class, attribute_info.attribute_name_index) {
-                Some(s) if s == "Signature" => {eprintln!("Got a signature attr!"); true},
+                Some(s) if s == "Signature" => {
+                    eprintln!("Got a signature attr!");
+                    true
+                }
                 Some(_) => false,
                 None => panic!(
                     "Could not find attribute name for index {}",

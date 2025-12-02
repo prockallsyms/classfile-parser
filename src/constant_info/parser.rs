@@ -1,18 +1,17 @@
 use crate::constant_info::*;
 use nom::{
-    Err,
     bytes::complete::take,
     combinator::map,
     error::{Error, ErrorKind},
-    number::complete::{be_f32, be_f64, be_i32, be_i64, be_u8, be_u16},
+    number::complete::{be_f32, be_f64, be_i32, be_i64, be_u16, be_u8},
+    Err,
 };
 
 fn utf8_constant(input: &[u8]) -> Utf8Constant {
     let utf8_string =
         cesu8::from_java_cesu8(input).unwrap_or_else(|_| String::from_utf8_lossy(input));
     Utf8Constant {
-        utf8_string: utf8_string.to_string(),
-        bytes: input.to_owned(),
+        utf8_string: utf8_string.to_string().into(),
     }
 }
 

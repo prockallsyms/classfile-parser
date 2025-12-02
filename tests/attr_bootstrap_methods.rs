@@ -32,7 +32,7 @@ fn test_attribute_bootstrap_methods() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
                 match *const_item {
                     ConstantInfo::Utf8(ref c) => {
-                        if c.utf8_string == "BootstrapMethods" {
+                        if c.utf8_string.to_string() == "BootstrapMethods" {
                             if bootstrap_method_const_index != 0 {
                                 assert!(
                                     false,
@@ -81,7 +81,7 @@ fn should_have_no_bootstrap_method_attr_if_no_invoke_dynamic() {
             for (_, const_item) in c.const_pool.iter().enumerate() {
                 match *const_item {
                     ConstantInfo::Utf8(ref c) => {
-                        if c.utf8_string == "BootstrapMethods" {
+                        if c.utf8_string.to_string() == "BootstrapMethods" {
                             assert!(
                                 false,
                                 "Should not have found a BootstrapMethods constant in a class not requiring it"

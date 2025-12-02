@@ -20,7 +20,7 @@ fn test_attribute_stack_map_table() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
                 match *const_item {
                     ConstantInfo::Utf8(ref c) => {
-                        if c.utf8_string == "StackMapTable" {
+                        if c.utf8_string.to_string() == "StackMapTable" {
                             if stack_map_table_index != 0 {
                                 assert!(
                                     false,
