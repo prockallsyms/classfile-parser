@@ -92,11 +92,11 @@ fn main() {
       - [x] Exceptions
       - [x] BootstrapMethods
     - [ ] Critical for Java SE
-      - [ ] InnerClasses
-      - [ ] EnclosingMethod
-      - [ ] Synthetic
-      - [ ] Signature
-      - [ ] RuntimeVisibleAnnotations
+      - [x] InnerClasses
+      - [x] EnclosingMethod
+      - [x] Synthetic
+      - [x] Signature
+      - [x] RuntimeVisibleAnnotations
       - [ ] RuntimeInvisibleAnnotations
       - [ ] RuntimeVisibleParameterAnnotations
       - [ ] RuntimeInvisibleParameterAnnotations
