@@ -1,4 +1,4 @@
-use binrw::{NullString, NullWideString, binrw};
+use binrw::{NullWideString, binrw};
 
 #[derive(Clone, Debug)]
 #[binrw]
