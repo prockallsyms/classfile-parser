@@ -159,10 +159,27 @@ pub fn runtime_visible_annotations_attribute_parser(
     ))
 }
 
+pub fn runtime_invisible_annotations_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], RuntimeInvisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+    let (input, num_annotations) = be_u16(input)?;
+    let (input, annotations) = count(annotation_parser, num_annotations as usize)(input)?;
+    Ok((
+        input,
+        RuntimeInvisibleTypeAnnotationsAttribute {
+            num_annotations,
+            annotations,
+        },
+    ))
+}
+
 fn annotation_parser(input: &[u8]) -> Result<(&[u8], RuntimeAnnotation), Err<&[u8]>> {
     let (input, type_index) = be_u16(input)?;
     let (input, num_element_value_pairs) = be_u16(input)?;
-    eprintln!("Parsing annotation with type index = {}, and {} element value pairs", type_index, num_element_value_pairs);
+    eprintln!(
+        "Parsing annotation with type index = {}, and {} element value pairs",
+        type_index, num_element_value_pairs
+    );
     let (input, element_value_pairs) =
         count(element_value_pair_parser, num_element_value_pairs as usize)(input)?;
     Ok((
@@ -198,24 +215,42 @@ fn element_value_parser(input: &[u8]) -> Result<(&[u8], ElementValue), Err<&[u8]
     eprintln!("Element value parsing: tag = {}", tag as char);
 
     match tag as char {
-        'B' | 'C' | 'I' | 'S' | 'Z' | 'D' | 'F' | 'J' | 's'  => {
+        'B' | 'C' | 'I' | 'S' | 'Z' | 'D' | 'F' | 'J' | 's' => {
             let (input, const_value_index) = be_u16(input)?;
-            eprintln!("Element value parsing: const_value_index = {}", const_value_index);
-            Ok((input, ElementValue::ConstValueIndex { tag: tag as char, value: const_value_index }))
+            eprintln!(
+                "Element value parsing: const_value_index = {}",
+                const_value_index
+            );
+            Ok((
+                input,
+                ElementValue::ConstValueIndex {
+                    tag: tag as char,
+                    value: const_value_index,
+                },
+            ))
         }
         'e' => {
             let (input, enum_const_value) = enum_const_value_parser(input)?;
-            eprintln!("Element value parsing: enum_const_value = {:?}", enum_const_value);
+            eprintln!(
+                "Element value parsing: enum_const_value = {:?}",
+                enum_const_value
+            );
             Ok((input, ElementValue::EnumConst(enum_const_value)))
         }
         'c' => {
             let (input, class_info_index) = be_u16(input)?;
-            eprintln!("Element value parsing: class_info_index = {}", class_info_index);
+            eprintln!(
+                "Element value parsing: class_info_index = {}",
+                class_info_index
+            );
             Ok((input, ElementValue::ClassInfoIndex(class_info_index)))
         }
         '@' => {
             let (input, annotation_value) = annotation_parser(input)?;
-            eprintln!("Element value parsing: annotation_value = {:?}", annotation_value);
+            eprintln!(
+                "Element value parsing: annotation_value = {:?}",
+                annotation_value
+            );
             Ok((input, ElementValue::AnnotationValue(annotation_value)))
         }
         '[' => {

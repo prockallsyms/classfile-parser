@@ -416,6 +416,60 @@ fn runtime_visible_annotations() {
 }
 
 #[test]
+fn runtime_invisible_annotations() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    let runtime_invisible_annotations_attribute = class
+        .methods
+        .iter()
+        .flat_map(|m| &m.attributes)
+        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeInvisibleAnnotations"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(runtime_invisible_annotations_attribute.len(), 1);
+    let f = runtime_invisible_annotations_attribute.first().unwrap();
+
+    let invisible_annotations = runtime_visible_annotations_attribute_parser(&f.info);
+    let inner = &invisible_annotations.unwrap();
+    assert!(&inner.0.is_empty());
+
+    /*
+    let should_be = RuntimeVisibleTypeAnnotationsAttribute {
+        num_annotations: 1,
+        annotations: vec![RuntimeAnnotation {
+            type_index: 30,
+            num_element_value_pairs: 1,
+            element_value_pairs: vec![ElementValuePair {
+                element_name_index: 31,
+                value: ElementValue::ConstValueIndex {
+                    tag: 's',
+                    value: 32,
+                },
+            }],
+        }],
+    };
+    */
+
+    assert_eq!(inner.1.num_annotations, 1);
+    assert_eq!(inner.1.annotations.len(), 1);
+    assert_eq!(inner.1.annotations[0].type_index, 34);
+    assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
+    assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
+    assert_eq!(
+        inner.1.annotations[0].element_value_pairs[0].element_name_index,
+        31
+    );
+
+    match inner.1.annotations[0].element_value_pairs[0].value {
+        ElementValue::ConstValueIndex { tag, value } => {
+            assert_eq!(tag, 's');
+            assert_eq!(value, 35);
+        }
+        _ => panic!("Expected ConstValueIndex"),
+    }
+}
+
+#[test]
 fn source_file() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/BasicClass.class");
     let (_, class) = class_parser(class_bytes).unwrap();
