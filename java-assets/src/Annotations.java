@@ -1,5 +1,7 @@
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+import java.lang.annotation.ElementType;
 
 public class Annotations {
   @Retention(RetentionPolicy.RUNTIME)
@@ -12,14 +14,27 @@ public class Annotations {
     String value();
   }
 
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.PARAMETER)
+  public @interface ParamVisibleAtRuntime {
+    String value();
+  }
+
+  @Retention(RetentionPolicy.CLASS)
+  @Target(ElementType.PARAMETER)
+  public @interface ParamInvisibleAtRuntime {
+    String value();
+  }
+
   @VisibleAtRuntime(value = "visisble")
   @InvisibleAtRuntime(value = "invisible")
-  public void myMethod(String s) {
-    System.out.println(s);
+  public void myMethod(@ParamVisibleAtRuntime(value = "visible") String v, @ParamInvisibleAtRuntime(value = "invisible") String i) {
+    System.out.print(v);
+    System.out.println(i);
   }
 
   public void main(String[] args) {
     Annotations annotations = new Annotations();
-    annotations.myMethod("Hello, World!");
+    annotations.myMethod("Hello,", " World!");
   }
 }

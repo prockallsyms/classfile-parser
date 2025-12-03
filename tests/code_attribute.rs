@@ -5,15 +5,16 @@ extern crate classfile_parser;
 use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    code_attribute_parser, enclosing_method_attribute_parser, inner_classes_attribute_parser,
-    method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser,
-    runtime_visible_annotations_attribute_parser, signature_attribute_parser, ElementValue,
-    ElementValuePair, InnerClassAccessFlags, RuntimeAnnotation,
-    RuntimeVisibleTypeAnnotationsAttribute,
+    ElementValue, InnerClassAccessFlags, code_attribute_parser, enclosing_method_attribute_parser,
+    inner_classes_attribute_parser, method_parameters_attribute_parser,
+    runtime_invisible_annotations_attribute_parser,
+    runtime_invisible_parameter_annotations_attribute_parser,
+    runtime_visible_annotations_attribute_parser,
+    runtime_visible_parameter_annotations_attribute_parser, signature_attribute_parser,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    code_parser, instruction_parser, Instruction, LocalVariableTableAttribute,
+    Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
 };
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
@@ -399,18 +400,18 @@ fn runtime_visible_annotations() {
 
     assert_eq!(inner.1.num_annotations, 1);
     assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 30);
+    assert_eq!(inner.1.annotations[0].type_index, 36);
     assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
     assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
         inner.1.annotations[0].element_value_pairs[0].element_name_index,
-        31
+        37
     );
 
     match inner.1.annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 32);
+            assert_eq!(value, 38);
         }
         _ => panic!("Expected ConstValueIndex"),
     }
@@ -453,18 +454,18 @@ fn runtime_invisible_annotations() {
 
     assert_eq!(inner.1.num_annotations, 1);
     assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 34);
+    assert_eq!(inner.1.annotations[0].type_index, 40);
     assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
     assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
         inner.1.annotations[0].element_value_pairs[0].element_name_index,
-        31
+        37
     );
 
     match inner.1.annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 35);
+            assert_eq!(value, 41);
         }
         _ => panic!("Expected ConstValueIndex"),
     }
@@ -484,43 +485,24 @@ fn runtime_visible_parameter_annotations() {
     assert_eq!(runtime_visible_annotations_attribute.len(), 1);
     let f = runtime_visible_annotations_attribute.first().unwrap();
 
-    let visible_annotations = runtime_visible_annotations_attribute_parser(&f.info);
+    let visible_annotations = runtime_visible_parameter_annotations_attribute_parser(&f.info);
     let inner = &visible_annotations.unwrap();
     assert!(&inner.0.is_empty());
 
-    /*
-    let should_be = runtimevisibletypeannotationsattribute {
-        num_annotations: 1,
-        annotations: vec![runtimeannotation {
-            type_index: 30,
-            num_element_value_pairs: 1,
-            element_value_pairs: vec![elementvaluepair {
-                element_name_index: 31,
-                value: elementvalue::constvalueindex {
-                    tag: 's',
-                    value: 32,
-                },
-            }],
-        }],
-    };
-    */
+    assert_eq!(inner.1.num_parameters, 2);
+    assert_eq!(inner.1.parameter_annotations.len(), 2);
+    assert_eq!(inner.1.parameter_annotations[0].num_annotations, 1);
+    assert_eq!(inner.1.parameter_annotations[0].annotations.len(), 1);
 
-    assert_eq!(inner.1.num_annotations, 1);
-    assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 30);
-    assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
-    assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
-    assert_eq!(
-        inner.1.annotations[0].element_value_pairs[0].element_name_index,
-        31
-    );
-
-    match inner.1.annotations[0].element_value_pairs[0].value {
+    match inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 32);
+            assert_eq!(value, 44);
         }
-        _ => panic!("expected constvalueindex"),
+        _ => panic!(
+            "expected ConstValueIndex, got {:?}",
+            inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value
+        ),
     }
 }
 
@@ -538,43 +520,24 @@ fn runtime_invisible_parameter_annotations() {
     assert_eq!(runtime_invisible_annotations_attribute.len(), 1);
     let f = runtime_invisible_annotations_attribute.first().unwrap();
 
-    let invisible_annotations = runtime_invisible_annotations_attribute_parser(&f.info);
+    let invisible_annotations = runtime_invisible_parameter_annotations_attribute_parser(&f.info);
     let inner = &invisible_annotations.unwrap();
     assert!(&inner.0.is_empty());
 
-    /*
-    let should_be = runtimevisibletypeannotationsattribute {
-        num_annotations: 1,
-        annotations: vec![runtimeannotation {
-            type_index: 30,
-            num_element_value_pairs: 1,
-            element_value_pairs: vec![elementvaluepair {
-                element_name_index: 31,
-                value: elementvalue::constvalueindex {
-                    tag: 's',
-                    value: 32,
-                },
-            }],
-        }],
-    };
-    */
+    assert_eq!(inner.1.num_parameters, 2);
+    assert_eq!(inner.1.parameter_annotations.len(), 2);
+    assert_eq!(inner.1.parameter_annotations[1].num_annotations, 1);
+    assert_eq!(inner.1.parameter_annotations[1].annotations.len(), 1);
 
-    assert_eq!(inner.1.num_annotations, 1);
-    assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 34);
-    assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
-    assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
-    assert_eq!(
-        inner.1.annotations[0].element_value_pairs[0].element_name_index,
-        31
-    );
-
-    match inner.1.annotations[0].element_value_pairs[0].value {
+    match inner.1.parameter_annotations[1].annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 35);
+            assert_eq!(value, 41);
         }
-        _ => panic!("expected constvalueindex"),
+        _ => panic!(
+            "expected ConstValueIndex, got {:?}",
+            inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value
+        ),
     }
 }
 
