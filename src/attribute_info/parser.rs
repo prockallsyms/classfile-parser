@@ -173,6 +173,34 @@ pub fn runtime_invisible_annotations_attribute_parser(
     ))
 }
 
+pub fn runtime_visible_parameter_annotations_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], RuntimeVisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+    let (input, num_annotations) = be_u16(input)?;
+    let (input, annotations) = count(annotation_parser, num_annotations as usize)(input)?;
+    Ok((
+        input,
+        RuntimeVisibleTypeAnnotationsAttribute {
+            num_annotations,
+            annotations,
+        },
+    ))
+}
+
+pub fn runtime_invisible_parameter_annotations_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], RuntimeInvisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+    let (input, num_annotations) = be_u16(input)?;
+    let (input, annotations) = count(annotation_parser, num_annotations as usize)(input)?;
+    Ok((
+        input,
+        RuntimeInvisibleTypeAnnotationsAttribute {
+            num_annotations,
+            annotations,
+        },
+    ))
+}
+
 fn annotation_parser(input: &[u8]) -> Result<(&[u8], RuntimeAnnotation), Err<&[u8]>> {
     let (input, type_index) = be_u16(input)?;
     let (input, num_element_value_pairs) = be_u16(input)?;

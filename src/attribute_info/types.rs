@@ -101,6 +101,18 @@ pub struct RuntimeInvisibleTypeAnnotationsAttribute {
 }
 
 #[derive(Clone, Debug)]
+pub struct RuntimeVisibleParameterAnnotationsAttribute {
+    pub num_annotations: u16,
+    pub annotations: Vec<RuntimeAnnotation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeInvisibleParameterAnnotationsAttribute {
+    pub num_annotations: u16,
+    pub annotations: Vec<RuntimeAnnotation>,
+}
+
+#[derive(Clone, Debug)]
 pub struct RuntimeAnnotation {
     pub type_index: u16,
     pub num_element_value_pairs: u16,
