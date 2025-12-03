@@ -24,7 +24,7 @@ use classfile_parser::class_parser;
 
 fn main() {
     let classfile_bytes = include_bytes!("../path/to/JavaClass.class");
-    
+
     match class_parser(classfile_bytes) {
         Ok((_, class_file)) => {
             println!(
@@ -97,9 +97,9 @@ fn main() {
       - [x] Synthetic
       - [x] Signature
       - [x] RuntimeVisibleAnnotations
-      - [ ] RuntimeInvisibleAnnotations
-      - [ ] RuntimeVisibleParameterAnnotations
-      - [ ] RuntimeInvisibleParameterAnnotations
+      - [x] RuntimeInvisibleAnnotations
+      - [x] RuntimeVisibleParameterAnnotations
+      - [x] RuntimeInvisibleParameterAnnotations
       - [ ] RuntimeVisibleTypeAnnotations
       - [ ] RuntimeInvisibleTypeAnnotations
       - [ ] AnnotationDefault
