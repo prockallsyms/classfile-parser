@@ -89,13 +89,13 @@ pub struct SignatureAttribute {
 }
 
 #[derive(Clone, Debug)]
-pub struct RuntimeVisibleTypeAnnotationsAttribute {
+pub struct RuntimeVisibleAnnotationsAttribute {
     pub num_annotations: u16,
     pub annotations: Vec<RuntimeAnnotation>,
 }
 
 #[derive(Clone, Debug)]
-pub struct RuntimeInvisibleTypeAnnotationsAttribute {
+pub struct RuntimeInvisibleAnnotationsAttribute {
     pub num_annotations: u16,
     pub annotations: Vec<RuntimeAnnotation>,
 }
@@ -103,13 +103,13 @@ pub struct RuntimeInvisibleTypeAnnotationsAttribute {
 #[derive(Clone, Debug)]
 pub struct RuntimeVisibleParameterAnnotationsAttribute {
     pub num_parameters: u8,
-    pub parameter_annotations: Vec<RuntimeVisibleTypeAnnotationsAttribute>,
+    pub parameter_annotations: Vec<RuntimeVisibleAnnotationsAttribute>,
 }
 
 #[derive(Clone, Debug)]
 pub struct RuntimeInvisibleParameterAnnotationsAttribute {
     pub num_parameters: u8,
-    pub parameter_annotations: Vec<RuntimeInvisibleTypeAnnotationsAttribute>,
+    pub parameter_annotations: Vec<RuntimeInvisibleAnnotationsAttribute>,
 }
 
 #[derive(Clone, Debug)]

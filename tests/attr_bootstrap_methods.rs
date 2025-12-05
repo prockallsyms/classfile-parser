@@ -30,19 +30,11 @@ fn test_attribute_bootstrap_methods() {
             println!("Constant pool:");
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
-                match *const_item {
-                    ConstantInfo::Utf8(ref c) => {
-                        if c.utf8_string.to_string() == "BootstrapMethods" {
-                            if bootstrap_method_const_index != 0 {
-                                assert!(
-                                    false,
-                                    "Should not find more than one BootstrapMethods constant"
-                                );
-                            }
-                            bootstrap_method_const_index = (const_index + 1) as u16;
+                if let ConstantInfo::Utf8(ref c) = *const_item && c.utf8_string.to_string() == "BootstrapMethods" {
+                        if bootstrap_method_const_index != 0 {
+                            panic!("Should not find more than one BootstrapMethods constant");
                         }
-                    }
-                    _ => {}
+                        bootstrap_method_const_index = (const_index + 1) as u16;
                 }
             }
             assert_ne!(bootstrap_method_const_index, 0);
@@ -52,7 +44,7 @@ fn test_attribute_bootstrap_methods() {
                 bootstrap_method_const_index
             );
 
-            for (_, attribute_item) in c.attributes.iter().enumerate() {
+            for attribute_item in c.attributes.iter() {
                 if attribute_item.attribute_name_index == bootstrap_method_const_index {
                     match bootstrap_methods_attribute_parser(&attribute_item.info) {
                         Ok((_, bsma)) => {
@@ -66,7 +58,7 @@ fn test_attribute_bootstrap_methods() {
                 }
             }
 
-            assert!(false, "Should not get to here");
+            panic!("Should not get to here");
         }
         _ => panic!("Not a valid class file"),
     }
@@ -78,17 +70,9 @@ fn should_have_no_bootstrap_method_attr_if_no_invoke_dynamic() {
         "../java-assets/compiled-classes/BasicClass.class"
     )) {
         Ok((_, c)) => {
-            for (_, const_item) in c.const_pool.iter().enumerate() {
-                match *const_item {
-                    ConstantInfo::Utf8(ref c) => {
-                        if c.utf8_string.to_string() == "BootstrapMethods" {
-                            assert!(
-                                false,
-                                "Should not have found a BootstrapMethods constant in a class not requiring it"
-                            )
-                        }
-                    }
-                    _ => {}
+            for const_item in c.const_pool.iter() {
+                if let ConstantInfo::Utf8(ref c) = *const_item && c.utf8_string.to_string() == "BootstrapMethods" {
+                    panic!("Should not have found a BootstrapMethods constant in a class not requiring it")
                 }
             }
         }

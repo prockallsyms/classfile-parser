@@ -1,10 +1,10 @@
 use nom::{
-    Err as BaseErr,
     bytes::complete::take,
     combinator::{map, success},
     error::{Error, ErrorKind},
     multi::count,
-    number::complete::{be_u8, be_u16, be_u32},
+    number::complete::{be_u16, be_u32, be_u8},
+    Err as BaseErr,
 };
 
 use crate::attribute_info::types::StackMapFrame::*;
@@ -147,12 +147,12 @@ pub fn signature_attribute_parser(input: &[u8]) -> Result<(&[u8], SignatureAttri
 
 pub fn runtime_visible_annotations_attribute_parser(
     input: &[u8],
-) -> Result<(&[u8], RuntimeVisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+) -> Result<(&[u8], RuntimeVisibleAnnotationsAttribute), Err<&[u8]>> {
     let (input, num_annotations) = be_u16(input)?;
     let (input, annotations) = count(annotation_parser, num_annotations as usize)(input)?;
     Ok((
         input,
-        RuntimeVisibleTypeAnnotationsAttribute {
+        RuntimeVisibleAnnotationsAttribute {
             num_annotations,
             annotations,
         },
@@ -161,12 +161,12 @@ pub fn runtime_visible_annotations_attribute_parser(
 
 pub fn runtime_invisible_annotations_attribute_parser(
     input: &[u8],
-) -> Result<(&[u8], RuntimeInvisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+) -> Result<(&[u8], RuntimeInvisibleAnnotationsAttribute), Err<&[u8]>> {
     let (input, num_annotations) = be_u16(input)?;
     let (input, annotations) = count(annotation_parser, num_annotations as usize)(input)?;
     Ok((
         input,
-        RuntimeInvisibleTypeAnnotationsAttribute {
+        RuntimeInvisibleAnnotationsAttribute {
             num_annotations,
             annotations,
         },
