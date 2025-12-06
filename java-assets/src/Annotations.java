@@ -9,7 +9,7 @@ public class Annotations {
 
   @Retention(RetentionPolicy.RUNTIME)
   public @interface VisibleAtRuntime {
-    String value();
+    String value() default "default annotation";
   }
 
   @Retention(RetentionPolicy.CLASS)

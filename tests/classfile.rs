@@ -29,10 +29,12 @@ fn test_valid_class() {
             println!("Constant pool:");
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
-                if let ConstantInfo::Utf8(ref c) = *const_item && c.utf8_string.to_string() == "Code" {
-                        code_const_index = (const_index + 1) as u16;
-                    }
+                if let ConstantInfo::Utf8(ref c) = *const_item
+                    && c.utf8_string.to_string() == "Code"
+                {
+                    code_const_index = (const_index + 1) as u16;
                 }
+            }
             println!("Code index = {}", code_const_index);
 
             println!("Interfaces:");

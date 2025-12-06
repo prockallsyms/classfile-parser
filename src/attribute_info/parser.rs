@@ -1,10 +1,10 @@
 use nom::{
+    Err as BaseErr,
     bytes::complete::take,
     combinator::{map, success},
     error::{Error, ErrorKind},
     multi::count,
-    number::complete::{be_u16, be_u32, be_u8},
-    Err as BaseErr,
+    number::complete::{be_u8, be_u16, be_u32},
 };
 
 use crate::attribute_info::types::StackMapFrame::*;
@@ -253,7 +253,10 @@ pub fn type_annotation_parser(input: &[u8]) -> Result<(&[u8], TypeAnnotation), E
         0x11..=0x12 => {
             let (input, type_parameter_index) = be_u8(input)?;
             let (input, bound_index) = be_u8(input)?;
-            target_info = TargetInfo::TypeParameterBound { type_parameter_index, bound_index }
+            target_info = TargetInfo::TypeParameterBound {
+                type_parameter_index,
+                bound_index,
+            }
         }
         0x13..=0x15 => {
             // Empty target_info
@@ -394,7 +397,7 @@ fn array_value_parser(input: &[u8]) -> Result<(&[u8], ElementArrayValue), Err<&[
     Ok((input, ElementArrayValue { num_values, values }))
 }
 
-fn element_value_parser(input: &[u8]) -> Result<(&[u8], ElementValue), Err<&[u8]>> {
+pub fn element_value_parser(input: &[u8]) -> Result<(&[u8], ElementValue), Err<&[u8]>> {
     let (input, tag) = be_u8(input)?;
     eprintln!("Element value parsing: tag = {}", tag as char);
 

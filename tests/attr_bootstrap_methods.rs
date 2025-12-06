@@ -30,11 +30,13 @@ fn test_attribute_bootstrap_methods() {
             println!("Constant pool:");
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
-                if let ConstantInfo::Utf8(ref c) = *const_item && c.utf8_string.to_string() == "BootstrapMethods" {
-                        if bootstrap_method_const_index != 0 {
-                            panic!("Should not find more than one BootstrapMethods constant");
-                        }
-                        bootstrap_method_const_index = (const_index + 1) as u16;
+                if let ConstantInfo::Utf8(ref c) = *const_item
+                    && c.utf8_string.to_string() == "BootstrapMethods"
+                {
+                    if bootstrap_method_const_index != 0 {
+                        panic!("Should not find more than one BootstrapMethods constant");
+                    }
+                    bootstrap_method_const_index = (const_index + 1) as u16;
                 }
             }
             assert_ne!(bootstrap_method_const_index, 0);
@@ -71,8 +73,12 @@ fn should_have_no_bootstrap_method_attr_if_no_invoke_dynamic() {
     )) {
         Ok((_, c)) => {
             for const_item in c.const_pool.iter() {
-                if let ConstantInfo::Utf8(ref c) = *const_item && c.utf8_string.to_string() == "BootstrapMethods" {
-                    panic!("Should not have found a BootstrapMethods constant in a class not requiring it")
+                if let ConstantInfo::Utf8(ref c) = *const_item
+                    && c.utf8_string.to_string() == "BootstrapMethods"
+                {
+                    panic!(
+                        "Should not have found a BootstrapMethods constant in a class not requiring it"
+                    )
                 }
             }
         }

@@ -195,6 +195,8 @@ pub struct RuntimeAnnotation {
     pub element_value_pairs: Vec<ElementValuePair>,
 }
 
+type DefaultAnnotation = ElementValue;
+
 #[derive(Clone, Debug)]
 pub struct ElementValuePair {
     pub element_name_index: u16,
