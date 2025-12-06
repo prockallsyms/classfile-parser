@@ -19,5 +19,6 @@ pub use self::parser::runtime_visible_annotations_attribute_parser;
 pub use self::parser::runtime_visible_parameter_annotations_attribute_parser;
 pub use self::parser::runtime_visible_type_annotations_attribute_parser;
 pub use self::parser::signature_attribute_parser;
+pub use self::parser::source_debug_extension_parser;
 pub use self::parser::sourcefile_attribute_parser;
 pub use self::parser::stack_map_table_attribute_parser;

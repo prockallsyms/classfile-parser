@@ -226,6 +226,15 @@ pub struct EnumConstValue {
 }
 
 #[derive(Clone, Debug)]
+pub struct SourceDebugExtensionAttribute {
+    // Per the spec:
+    // The debug_extension array holds extended debugging information which has no
+    // semantic effect on the Java Virtual Machine. The information is represented
+    // using a modified UTF-8 string with no terminating zero byte.
+    pub debug_extension: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
 pub enum VerificationTypeInfo {
     Top,
     Integer,

@@ -461,6 +461,14 @@ fn enum_const_value_parser(input: &[u8]) -> Result<(&[u8], EnumConstValue), Err<
     ))
 }
 
+// not even really parsing ...
+pub fn source_debug_extension_parser(
+    input: &[u8],
+) -> Result<(&[u8], SourceDebugExtensionAttribute), Err<&[u8]>> {
+    let debug_extension = Vec::from(input);
+    Ok((input, SourceDebugExtensionAttribute { debug_extension }))
+}
+
 fn same_frame_parser(input: &[u8], frame_type: u8) -> Result<(&[u8], StackMapFrame), Err<&[u8]>> {
     success(SameFrame { frame_type })(input)
 }

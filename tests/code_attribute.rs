@@ -12,6 +12,7 @@ use classfile_parser::attribute_info::{
     runtime_visible_annotations_attribute_parser,
     runtime_visible_parameter_annotations_attribute_parser,
     runtime_visible_type_annotations_attribute_parser, signature_attribute_parser,
+    source_debug_extension_parser,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
@@ -642,6 +643,28 @@ fn default_annotation_value() {
             value: 10
         }
     );
+}
+
+// SourceDebugExtension attributes appear to be custom/non-standard. While it would
+// be nice to parse, ultimately the spec defines the attribute as a byte array that
+// contains "extended debugging information which has no semantic effect on the Java
+// Virtual Machine", so I will leave this test to be better developed when example
+// use cases are found.
+// #[test]
+fn source_debug_extension() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/BasicClass.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    let source_debug_extension_attribute = class
+        .attributes
+        .iter()
+        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "SourceDebugExtension"))
+        .collect::<Vec<_>>();
+    assert_eq!(source_debug_extension_attribute.len(), 1);
+    let f = source_debug_extension_attribute.first().unwrap();
+
+    let default_annotation = source_debug_extension_parser(&f.info);
+    let inner = &default_annotation.unwrap();
+    dbg!(inner);
 }
 
 #[test]
