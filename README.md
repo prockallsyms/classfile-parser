@@ -91,7 +91,7 @@ fn main() {
       - [x] StackMapTable
       - [x] Exceptions
       - [x] BootstrapMethods
-    - [ ] Critical for Java SE
+    - [x] Critical for Java SE
       - [x] InnerClasses
       - [x] EnclosingMethod
       - [x] Synthetic
@@ -102,7 +102,7 @@ fn main() {
       - [x] RuntimeInvisibleParameterAnnotations
       - [x] RuntimeVisibleTypeAnnotations
       - [x] RuntimeInvisibleTypeAnnotations
-      - [ ] AnnotationDefault
+      - [x] AnnotationDefault
       - [X] MethodParameters
     - [ ] Useful but not critical
       - [x] SourceFile
