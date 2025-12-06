@@ -4,6 +4,9 @@ import java.lang.annotation.Target;
 import java.lang.annotation.ElementType;
 
 public class Annotations {
+  public @TypeVisibleAtRuntime(value = "type visible") String visibleAnnotationType;
+  public @TypeInvisibleAtRuntime(value = "type invisible") String invisibleAnnotationType;
+
   @Retention(RetentionPolicy.RUNTIME)
   public @interface VisibleAtRuntime {
     String value();
@@ -23,6 +26,18 @@ public class Annotations {
   @Retention(RetentionPolicy.CLASS)
   @Target(ElementType.PARAMETER)
   public @interface ParamInvisibleAtRuntime {
+    String value();
+  }
+
+  @Retention(RetentionPolicy.RUNTIME)
+  @Target(ElementType.TYPE_USE)
+  public @interface TypeVisibleAtRuntime {
+    String value();
+  }
+
+  @Retention(RetentionPolicy.CLASS)
+  @Target(ElementType.TYPE_USE)
+  public @interface TypeInvisibleAtRuntime {
     String value();
   }
 

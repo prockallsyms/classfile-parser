@@ -206,7 +206,157 @@ pub fn runtime_invisible_parameter_annotations_attribute_parser(
         },
     ))
 }
+pub fn runtime_visible_type_annotations_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], RuntimeVisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+    let (input, num_annotations) = be_u16(input)?;
+    let (input, type_annotations) = count(type_annotation_parser, num_annotations as usize)(input)?;
 
+    Ok((
+        input,
+        RuntimeVisibleTypeAnnotationsAttribute {
+            num_annotations,
+            type_annotations,
+        },
+    ))
+}
+
+pub fn runtime_invisible_type_annotations_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], RuntimeInvisibleTypeAnnotationsAttribute), Err<&[u8]>> {
+    let (input, num_annotations) = be_u16(input)?;
+    let (input, type_annotations) = count(type_annotation_parser, num_annotations as usize)(input)?;
+
+    Ok((
+        input,
+        RuntimeInvisibleTypeAnnotationsAttribute {
+            num_annotations,
+            type_annotations,
+        },
+    ))
+}
+
+pub fn type_annotation_parser(input: &[u8]) -> Result<(&[u8], TypeAnnotation), Err<&[u8]>> {
+    let (input, target_type) = be_u8(input)?;
+    let mut target_info: TargetInfo = TargetInfo::Empty;
+    match target_type {
+        0x0 | 0x1 => {
+            let (input, type_parameter_index) = be_u8(input)?;
+            target_info = TargetInfo::TypeParameter {
+                type_parameter_index,
+            };
+        }
+        0x10 => {
+            let (input, supertype_index) = be_u16(input)?;
+            target_info = TargetInfo::SuperType { supertype_index };
+        }
+        0x11..=0x12 => {
+            let (input, type_parameter_index) = be_u8(input)?;
+            let (input, bound_index) = be_u8(input)?;
+            target_info = TargetInfo::TypeParameterBound { type_parameter_index, bound_index }
+        }
+        0x13..=0x15 => {
+            // Empty target_info
+        }
+        0x16 => {
+            let (input, formal_parameter_index) = be_u8(input)?;
+            target_info = TargetInfo::FormalParameter {
+                formal_parameter_index,
+            };
+        }
+        0x17 => {
+            let (input, throws_type_index) = be_u16(input)?;
+            target_info = TargetInfo::Throws { throws_type_index };
+        }
+        0x40 | 0x41 => {
+            let (input, table_length) = be_u16(input)?;
+            let (input, tables) = count(
+                local_variable_table_annotation_parser,
+                table_length as usize,
+            )(input)?;
+            target_info = TargetInfo::LocalVar {
+                table_length,
+                tables,
+            };
+        }
+        0x42 => {
+            let (input, exception_table_index) = be_u16(input)?;
+            target_info = TargetInfo::Catch {
+                exception_table_index,
+            }
+        }
+        0x43..=0x46 => {
+            let (input, offset) = be_u16(input)?;
+            target_info = TargetInfo::Offset { offset }
+        }
+        0x47..=0x4B => {
+            let (input, offset) = be_u16(input)?;
+            let (input, type_argument_index) = be_u8(input)?;
+            target_info = TargetInfo::TypeArgument {
+                offset,
+                type_argument_index,
+            };
+        }
+        _ => {
+            eprintln!(
+                "Parsing RuntimeVisibleTypeAnnotationsAttribute with target_type = {}",
+                target_type
+            );
+        }
+    }
+    let (input, target_path) = target_path_parser(input)?;
+    let (input, type_index) = be_u16(input)?;
+    let (input, num_element_value_pairs) = be_u16(input)?;
+    let (input, element_value_pairs) =
+        count(element_value_pair_parser, num_element_value_pairs as usize)(input)?;
+
+    Ok((
+        input,
+        TypeAnnotation {
+            target_type,
+            target_info,
+            target_path,
+            type_index,
+            num_element_value_pairs,
+            element_value_pairs,
+        },
+    ))
+}
+
+fn target_path_parser(input: &[u8]) -> Result<(&[u8], TypePath), Err<&[u8]>> {
+    let (input, path_length) = be_u8(input)?;
+    let (input, paths) = count(
+        |input| {
+            let (input, type_path_kind) = be_u8(input)?;
+            let (input, type_argument_index) = be_u8(input)?;
+            Ok((
+                input,
+                TypePathEntry {
+                    type_path_kind,
+                    type_argument_index,
+                },
+            ))
+        },
+        path_length as usize,
+    )(input)?;
+    Ok((input, TypePath { path_length, paths }))
+}
+
+pub fn local_variable_table_annotation_parser(
+    input: &[u8],
+) -> Result<(&[u8], LocalVarTableAnnotation), Err<&[u8]>> {
+    let (input, start_pc) = be_u16(input)?;
+    let (input, length) = be_u16(input)?;
+    let (input, index) = be_u16(input)?;
+    Ok((
+        input,
+        LocalVarTableAnnotation {
+            start_pc,
+            length,
+            index,
+        },
+    ))
+}
 fn annotation_parser(input: &[u8]) -> Result<(&[u8], RuntimeAnnotation), Err<&[u8]>> {
     let (input, type_index) = be_u16(input)?;
     let (input, num_element_value_pairs) = be_u16(input)?;

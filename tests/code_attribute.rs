@@ -5,16 +5,11 @@ extern crate classfile_parser;
 use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    ElementValue, InnerClassAccessFlags, code_attribute_parser, enclosing_method_attribute_parser,
-    inner_classes_attribute_parser, method_parameters_attribute_parser,
-    runtime_invisible_annotations_attribute_parser,
-    runtime_invisible_parameter_annotations_attribute_parser,
-    runtime_visible_annotations_attribute_parser,
-    runtime_visible_parameter_annotations_attribute_parser, signature_attribute_parser,
+    code_attribute_parser, enclosing_method_attribute_parser, inner_classes_attribute_parser, method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser, runtime_invisible_parameter_annotations_attribute_parser, runtime_visible_annotations_attribute_parser, runtime_visible_parameter_annotations_attribute_parser, runtime_visible_type_annotations_attribute_parser, signature_attribute_parser, ElementValue, InnerClassAccessFlags, TargetInfo
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
+    code_parser, instruction_parser, Instruction, LocalVariableTableAttribute,
 };
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
@@ -400,7 +395,7 @@ fn runtime_visible_annotations() {
 
     assert_eq!(inner.1.num_annotations, 1);
     assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 36);
+    assert_eq!(inner.1.annotations[0].type_index, 46);
     assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
     assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
@@ -411,7 +406,7 @@ fn runtime_visible_annotations() {
     match inner.1.annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 38);
+            assert_eq!(value, 47);
         }
         _ => panic!("Expected ConstValueIndex"),
     }
@@ -454,7 +449,7 @@ fn runtime_invisible_annotations() {
 
     assert_eq!(inner.1.num_annotations, 1);
     assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 40);
+    assert_eq!(inner.1.annotations[0].type_index, 49);
     assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
     assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
@@ -465,7 +460,7 @@ fn runtime_invisible_annotations() {
     match inner.1.annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 41);
+            assert_eq!(value, 50);
         }
         _ => panic!("Expected ConstValueIndex"),
     }
@@ -497,7 +492,7 @@ fn runtime_visible_parameter_annotations() {
     match inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 44);
+            assert_eq!(value, 53);
         }
         _ => panic!(
             "expected ConstValueIndex, got {:?}",
@@ -532,13 +527,70 @@ fn runtime_invisible_parameter_annotations() {
     match inner.1.parameter_annotations[1].annotations[0].element_value_pairs[0].value {
         ElementValue::ConstValueIndex { tag, value } => {
             assert_eq!(tag, 's');
-            assert_eq!(value, 41);
+            assert_eq!(value, 50);
         }
         _ => panic!(
             "expected ConstValueIndex, got {:?}",
             inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value
         ),
     }
+}
+
+#[test]
+fn runtime_visible_type_annotations() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    let runtime_visible_type_annotations_attribute = class
+        .fields
+        .iter()
+        .flat_map(|f| &f.attributes)
+        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeVisibleTypeAnnotations"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(runtime_visible_type_annotations_attribute.len(), 1);
+    let f = runtime_visible_type_annotations_attribute.first().unwrap();
+
+    let visible_annotations = runtime_visible_type_annotations_attribute_parser(&f.info);
+    let inner = &visible_annotations.unwrap();
+    assert_eq!(inner.1.num_annotations, 1);
+    assert_eq!(inner.1.type_annotations.len(), 1);
+    assert_eq!(inner.1.type_annotations[0].target_type, 19);
+    assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
+    assert_eq!(inner.1.type_annotations[0].target_path.path_length, 0);
+    assert_eq!(inner.1.type_annotations[0].target_path.paths.len(), 0);
+    assert_eq!(inner.1.type_annotations[0].type_index, 36);
+    assert_eq!(inner.1.type_annotations[0].num_element_value_pairs, 1);
+    assert_eq!(inner.1.type_annotations[0].element_value_pairs.len(), 1);
+    assert_eq!(inner.1.type_annotations[0].element_value_pairs[0].element_name_index, 37);
+    assert_matches!(inner.1.type_annotations[0].element_value_pairs[0].value, ElementValue::ConstValueIndex { tag: 's', value: 38 });
+}
+
+#[test]
+fn runtime_invisible_type_annotations() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    let runtime_invisible_type_annotations_attribute = class
+        .fields
+        .iter()
+        .flat_map(|f| &f.attributes)
+        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeInvisibleTypeAnnotations"))
+        .collect::<Vec<_>>();
+    assert_eq!(runtime_invisible_type_annotations_attribute.len(), 1);
+    let f = runtime_invisible_type_annotations_attribute.first().unwrap();
+
+    let invisible_annotations = runtime_visible_type_annotations_attribute_parser(&f.info);
+    let inner = &invisible_annotations.unwrap();
+    assert_eq!(inner.1.num_annotations, 1);
+    assert_eq!(inner.1.type_annotations.len(), 1);
+    assert_eq!(inner.1.type_annotations[0].target_type, 19);
+    assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
+    assert_eq!(inner.1.type_annotations[0].target_path.path_length, 0);
+    assert_eq!(inner.1.type_annotations[0].target_path.paths.len(), 0);
+    assert_eq!(inner.1.type_annotations[0].type_index, 41);
+    assert_eq!(inner.1.type_annotations[0].num_element_value_pairs, 1);
+    assert_eq!(inner.1.type_annotations[0].element_value_pairs.len(), 1);
+    assert_eq!(inner.1.type_annotations[0].element_value_pairs[0].element_name_index, 37);
+    assert_matches!(inner.1.type_annotations[0].element_value_pairs[0].value, ElementValue::ConstValueIndex { tag: 's', value: 42 });
 }
 
 #[test]

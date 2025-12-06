@@ -113,6 +113,82 @@ pub struct RuntimeInvisibleParameterAnnotationsAttribute {
 }
 
 #[derive(Clone, Debug)]
+pub struct RuntimeVisibleTypeAnnotationsAttribute {
+    pub num_annotations: u16,
+    pub type_annotations: Vec<TypeAnnotation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeInvisibleTypeAnnotationsAttribute {
+    pub num_annotations: u16,
+    pub type_annotations: Vec<TypeAnnotation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeAnnotation {
+    pub target_type: u8,
+    pub target_info: TargetInfo,
+    pub target_path: TypePath,
+    pub type_index: u16,
+    pub num_element_value_pairs: u16,
+    pub element_value_pairs: Vec<ElementValuePair>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TargetInfo {
+    TypeParameter {
+        type_parameter_index: u8,
+    },
+    SuperType {
+        supertype_index: u16,
+    },
+    TypeParameterBound {
+        type_parameter_index: u8,
+        bound_index: u8,
+    },
+    Empty,
+    FormalParameter {
+        formal_parameter_index: u8,
+    },
+    Throws {
+        throws_type_index: u16,
+    },
+    LocalVar {
+        table_length: u16,
+        tables: Vec<LocalVarTableAnnotation>,
+    },
+    Catch {
+        exception_table_index: u16,
+    },
+    Offset {
+        offset: u16,
+    },
+    TypeArgument {
+        offset: u16,
+        type_argument_index: u8,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct TypePath {
+    pub path_length: u8,
+    pub paths: Vec<TypePathEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypePathEntry {
+    pub type_path_kind: u8,
+    pub type_argument_index: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalVarTableAnnotation {
+    pub start_pc: u16,
+    pub length: u16,
+    pub index: u16,
+}
+
+#[derive(Clone, Debug)]
 pub struct RuntimeAnnotation {
     pub type_index: u16,
     pub num_element_value_pairs: u16,
