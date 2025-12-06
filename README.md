@@ -100,8 +100,8 @@ fn main() {
       - [x] RuntimeInvisibleAnnotations
       - [x] RuntimeVisibleParameterAnnotations
       - [x] RuntimeInvisibleParameterAnnotations
-      - [ ] RuntimeVisibleTypeAnnotations
-      - [ ] RuntimeInvisibleTypeAnnotations
+      - [x] RuntimeVisibleTypeAnnotations
+      - [x] RuntimeInvisibleTypeAnnotations
       - [ ] AnnotationDefault
       - [X] MethodParameters
     - [ ] Useful but not critical
