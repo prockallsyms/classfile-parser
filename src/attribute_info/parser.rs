@@ -241,18 +241,18 @@ pub fn type_annotation_parser(input: &[u8]) -> Result<(&[u8], TypeAnnotation), E
     let mut target_info: TargetInfo = TargetInfo::Empty;
     match target_type {
         0x0 | 0x1 => {
-            let (input, type_parameter_index) = be_u8(input)?;
+            let (_input, type_parameter_index) = be_u8(input)?;
             target_info = TargetInfo::TypeParameter {
                 type_parameter_index,
             };
         }
         0x10 => {
-            let (input, supertype_index) = be_u16(input)?;
+            let (_input, supertype_index) = be_u16(input)?;
             target_info = TargetInfo::SuperType { supertype_index };
         }
         0x11..=0x12 => {
             let (input, type_parameter_index) = be_u8(input)?;
-            let (input, bound_index) = be_u8(input)?;
+            let (_input, bound_index) = be_u8(input)?;
             target_info = TargetInfo::TypeParameterBound {
                 type_parameter_index,
                 bound_index,
@@ -262,18 +262,18 @@ pub fn type_annotation_parser(input: &[u8]) -> Result<(&[u8], TypeAnnotation), E
             // Empty target_info
         }
         0x16 => {
-            let (input, formal_parameter_index) = be_u8(input)?;
+            let (_input, formal_parameter_index) = be_u8(input)?;
             target_info = TargetInfo::FormalParameter {
                 formal_parameter_index,
             };
         }
         0x17 => {
-            let (input, throws_type_index) = be_u16(input)?;
+            let (_input, throws_type_index) = be_u16(input)?;
             target_info = TargetInfo::Throws { throws_type_index };
         }
         0x40 | 0x41 => {
             let (input, table_length) = be_u16(input)?;
-            let (input, tables) = count(
+            let (_input, tables) = count(
                 local_variable_table_annotation_parser,
                 table_length as usize,
             )(input)?;
@@ -283,18 +283,18 @@ pub fn type_annotation_parser(input: &[u8]) -> Result<(&[u8], TypeAnnotation), E
             };
         }
         0x42 => {
-            let (input, exception_table_index) = be_u16(input)?;
+            let (_input, exception_table_index) = be_u16(input)?;
             target_info = TargetInfo::Catch {
                 exception_table_index,
             }
         }
         0x43..=0x46 => {
-            let (input, offset) = be_u16(input)?;
+            let (_input, offset) = be_u16(input)?;
             target_info = TargetInfo::Offset { offset }
         }
         0x47..=0x4B => {
             let (input, offset) = be_u16(input)?;
-            let (input, type_argument_index) = be_u8(input)?;
+            let (_input, type_argument_index) = be_u8(input)?;
             target_info = TargetInfo::TypeArgument {
                 offset,
                 type_argument_index,

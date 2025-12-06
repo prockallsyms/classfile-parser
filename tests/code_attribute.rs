@@ -5,18 +5,11 @@ extern crate classfile_parser;
 use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    ElementValue, InnerClassAccessFlags, TargetInfo, code_attribute_parser, element_value_parser,
-    enclosing_method_attribute_parser, inner_classes_attribute_parser,
-    method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser,
-    runtime_invisible_parameter_annotations_attribute_parser,
-    runtime_visible_annotations_attribute_parser,
-    runtime_visible_parameter_annotations_attribute_parser,
-    runtime_visible_type_annotations_attribute_parser, signature_attribute_parser,
-    source_debug_extension_parser,
+    code_attribute_parser, element_value_parser, enclosing_method_attribute_parser, inner_classes_attribute_parser, method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser, runtime_invisible_parameter_annotations_attribute_parser, runtime_visible_annotations_attribute_parser, runtime_visible_parameter_annotations_attribute_parser, runtime_visible_type_annotations_attribute_parser, signature_attribute_parser, source_debug_extension_parser, DefaultAnnotation, ElementValue, InnerClassAccessFlags, TargetInfo
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
+    code_parser, instruction_parser, Instruction, LocalVariableTableAttribute,
 };
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
@@ -634,10 +627,10 @@ fn default_annotation_value() {
     assert_eq!(default_annotation_attributes.len(), 1);
     let f = default_annotation_attributes.first().unwrap();
 
-    let default_annotation = element_value_parser(&f.info);
-    let inner = &default_annotation.unwrap();
+    let default_annotation= element_value_parser(&f.info);
+    let inner: DefaultAnnotation = default_annotation.unwrap().1 as DefaultAnnotation;
     assert_matches!(
-        inner.1,
+        inner,
         ElementValue::ConstValueIndex {
             tag: 's',
             value: 10

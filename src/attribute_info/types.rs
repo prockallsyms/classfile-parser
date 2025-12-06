@@ -195,7 +195,7 @@ pub struct RuntimeAnnotation {
     pub element_value_pairs: Vec<ElementValuePair>,
 }
 
-type DefaultAnnotation = ElementValue;
+pub type DefaultAnnotation = ElementValue;
 
 #[derive(Clone, Debug)]
 pub struct ElementValuePair {
