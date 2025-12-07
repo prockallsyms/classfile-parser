@@ -235,6 +235,18 @@ pub struct SourceDebugExtensionAttribute {
 }
 
 #[derive(Clone, Debug)]
+pub struct LineNumberTable {
+    pub line_number_table_length: u16,
+    pub line_number_table: Vec<LineNumberTableEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LineNumberTableEntry {
+    pub start_pc: u16,
+    pub line_number: u16,
+}
+
+#[derive(Clone, Debug)]
 pub enum VerificationTypeInfo {
     Top,
     Integer,

@@ -5,7 +5,15 @@ extern crate classfile_parser;
 use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    code_attribute_parser, element_value_parser, enclosing_method_attribute_parser, inner_classes_attribute_parser, method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser, runtime_invisible_parameter_annotations_attribute_parser, runtime_visible_annotations_attribute_parser, runtime_visible_parameter_annotations_attribute_parser, runtime_visible_type_annotations_attribute_parser, signature_attribute_parser, source_debug_extension_parser, DefaultAnnotation, ElementValue, InnerClassAccessFlags, TargetInfo
+    code_attribute_parser, element_value_parser, enclosing_method_attribute_parser,
+    inner_classes_attribute_parser, line_number_table_attribute_parser,
+    method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser,
+    runtime_invisible_parameter_annotations_attribute_parser,
+    runtime_visible_annotations_attribute_parser,
+    runtime_visible_parameter_annotations_attribute_parser,
+    runtime_visible_type_annotations_attribute_parser, signature_attribute_parser,
+    source_debug_extension_parser, DefaultAnnotation, ElementValue, InnerClassAccessFlags,
+    TargetInfo,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
@@ -627,7 +635,7 @@ fn default_annotation_value() {
     assert_eq!(default_annotation_attributes.len(), 1);
     let f = default_annotation_attributes.first().unwrap();
 
-    let default_annotation= element_value_parser(&f.info);
+    let default_annotation = element_value_parser(&f.info);
     let inner: DefaultAnnotation = default_annotation.unwrap().1 as DefaultAnnotation;
     assert_matches!(
         inner,
@@ -686,4 +694,34 @@ fn source_file() {
     let s = lookup_string(&class, source.sourcefile_index).unwrap();
 
     assert_eq!(s, "BasicClass.java");
+}
+
+#[test]
+fn line_number_table() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/Instructions.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+    let default_annotation_attributes = class
+        .methods
+        .iter()
+        .find(|m| m.access_flags.contains(MethodAccessFlags::STATIC))
+        .unwrap();
+
+    let (_, code_attribute) =
+        code_attribute_parser(&default_annotation_attributes.attributes[0].info).unwrap();
+
+    assert_eq!(
+        code_attribute.attributes.len(),
+        code_attribute.attributes_count as usize
+    );
+
+    let line_number_tables = &code_attribute.attributes.iter()
+        .filter(|a| lookup_string(&class, a.attribute_name_index).unwrap() == "LineNumberTable")
+        .map(|a| line_number_table_attribute_parser(&a.info).unwrap().1)
+        .collect::<Vec<_>>();
+
+    assert_eq!(line_number_tables.len(), 1);
+    assert_eq!(line_number_tables[0].line_number_table_length, 12);
+    assert_eq!(line_number_tables[0].line_number_table.len(), 12);
+    assert_eq!(line_number_tables[0].line_number_table[0].start_pc, 0);
+    assert_eq!(line_number_tables[0].line_number_table[0].line_number, 3);
 }

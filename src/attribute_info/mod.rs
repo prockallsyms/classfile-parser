@@ -11,6 +11,7 @@ pub use self::parser::element_value_parser;
 pub use self::parser::enclosing_method_attribute_parser;
 pub use self::parser::exceptions_attribute_parser;
 pub use self::parser::inner_classes_attribute_parser;
+pub use self::parser::line_number_table_attribute_parser;
 pub use self::parser::method_parameters_attribute_parser;
 pub use self::parser::runtime_invisible_annotations_attribute_parser;
 pub use self::parser::runtime_invisible_parameter_annotations_attribute_parser;
