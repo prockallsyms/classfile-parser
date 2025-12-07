@@ -17,7 +17,8 @@ use classfile_parser::attribute_info::{
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    code_parser, instruction_parser, local_variable_type_table_parser, Instruction, LocalVariableTableAttribute
+    code_parser, instruction_parser, local_variable_type_table_parser, Instruction,
+    LocalVariableTableAttribute,
 };
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
@@ -740,10 +741,7 @@ fn local_variable_type_table() {
         .iter()
         .find_map(|attribute_info| {
             match lookup_string(&class, attribute_info.attribute_name_index)?.as_str() {
-                "Code" => {
-                    code_attribute_parser(&attribute_info.info)
-                        .ok()
-                }
+                "Code" => code_attribute_parser(&attribute_info.info).ok(),
                 _ => None,
             }
         })
@@ -754,10 +752,7 @@ fn local_variable_type_table() {
         .find_map(|attribute_info| {
             match lookup_string(&class, attribute_info.attribute_name_index)?.as_str() {
                 "LocalVariableTypeTable" => {
-                    local_variable_type_table_parser(
-                        &attribute_info.info,
-                    )
-                    .ok()
+                    local_variable_type_table_parser(&attribute_info.info).ok()
                 }
                 _ => None,
             }
@@ -774,8 +769,59 @@ fn local_variable_type_table() {
     // All used types in method code block of last method
     assert_eq!(
         types,
-        vec![
-            "Ljava/util/HashMap<Ljava/lang/Integer;Ljava/lang/String;>;"
-        ]
+        vec!["Ljava/util/HashMap<Ljava/lang/Integer;Ljava/lang/String;>;"]
     );
+}
+
+#[test]
+fn deprecated() {
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/DeprecatedAnnotation.class");
+    let (_, class) = class_parser(class_bytes).unwrap();
+
+    let deprecated_class_attribute = &class
+        .attributes
+        .iter()
+        .filter(|attribute_info| {
+            matches!(
+                lookup_string(&class, attribute_info.attribute_name_index)
+                    .unwrap()
+                    .as_str(),
+                "Deprecated"
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(deprecated_class_attribute.len(), 1);
+
+    let deprecated_method_attribute = &class
+        .methods
+        .iter()
+        .flat_map(|m| &m.attributes)
+        .filter(|attribute_info| {
+            matches!(
+                lookup_string(&class, attribute_info.attribute_name_index)
+                    .unwrap()
+                    .as_str(),
+                "Deprecated"
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(deprecated_method_attribute.len(), 1);
+
+    let deprecated_field_attribute = &class
+        .fields
+        .iter()
+        .flat_map(|f| &f.attributes)
+        .filter(|attribute_info| {
+            matches!(
+                lookup_string(&class, attribute_info.attribute_name_index)
+                    .unwrap()
+                    .as_str(),
+                "Deprecated"
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(deprecated_field_attribute.len(), 1);
 }
