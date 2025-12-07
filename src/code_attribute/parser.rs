@@ -1,12 +1,12 @@
 use crate::code_attribute::types::Instruction;
 use nom::{
+    Err as BaseErr, IResult, Offset,
     bytes::complete::{tag, take},
     combinator::{complete, fail, map, success},
     error::Error,
     multi::{count, many0},
-    number::complete::{be_i16, be_i32, be_i8, be_u16, be_u32, be_u8},
+    number::complete::{be_i8, be_i16, be_i32, be_u8, be_u16, be_u32},
     sequence::{pair, preceded, tuple},
-    Err as BaseErr, IResult, Offset,
 };
 
 use super::{

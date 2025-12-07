@@ -84,7 +84,7 @@ fn main() {
 - [x] Methods
 - [x] Attributes
   - [x] Basic attribute info block parsing
-  - [ ] Known typed attributes parsing
+  - [x] Known typed attributes parsing
     - [x] Critical for JVM
       - [x] ConstantValue
       - [x] Code
@@ -104,10 +104,10 @@ fn main() {
       - [x] RuntimeInvisibleTypeAnnotations
       - [x] AnnotationDefault
       - [X] MethodParameters
-    - [ ] Useful but not critical
+    - [x] Useful but not critical
       - [x] SourceFile
-      - [ ] SourceDebugExtension
-      - [ ] LineNumberTable
+      - [~] SourceDebugExtension
+      - [x] LineNumberTable
       - [x] LocalVariableTable
-      - [ ] LocalVariableTypeTable
-      - [ ] Deprecated
+      - [x] LocalVariableTypeTable
+      - [x] Deprecated

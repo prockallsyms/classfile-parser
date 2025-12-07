@@ -469,21 +469,34 @@ pub fn source_debug_extension_parser(
     Ok((input, SourceDebugExtensionAttribute { debug_extension }))
 }
 
-pub fn line_number_table_attribute_parser(input: &[u8]) -> Result<(&[u8], LineNumberTable), Err<&[u8]>> {
+pub fn line_number_table_attribute_parser(
+    input: &[u8],
+) -> Result<(&[u8], LineNumberTable), Err<&[u8]>> {
     let (input, line_number_table_length) = be_u16(input)?;
-    let (input, line_number_table) = count(line_number_table_entry_parser, line_number_table_length as usize)(input)?;
+    let (input, line_number_table) = count(
+        line_number_table_entry_parser,
+        line_number_table_length as usize,
+    )(input)?;
     Ok((
         input,
-        LineNumberTable { line_number_table_length, line_number_table },
+        LineNumberTable {
+            line_number_table_length,
+            line_number_table,
+        },
     ))
 }
 
-pub fn line_number_table_entry_parser(input: &[u8]) -> Result<(&[u8], LineNumberTableEntry), Err<&[u8]>> {
+pub fn line_number_table_entry_parser(
+    input: &[u8],
+) -> Result<(&[u8], LineNumberTableEntry), Err<&[u8]>> {
     let (input, start_pc) = be_u16(input)?;
     let (input, line_number) = be_u16(input)?;
     Ok((
         input,
-        LineNumberTableEntry { start_pc, line_number },
+        LineNumberTableEntry {
+            start_pc,
+            line_number,
+        },
     ))
 }
 

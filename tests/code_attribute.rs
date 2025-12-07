@@ -5,20 +5,20 @@ extern crate classfile_parser;
 use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    code_attribute_parser, element_value_parser, enclosing_method_attribute_parser,
-    inner_classes_attribute_parser, line_number_table_attribute_parser,
-    method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser,
+    DefaultAnnotation, ElementValue, InnerClassAccessFlags, TargetInfo, code_attribute_parser,
+    element_value_parser, enclosing_method_attribute_parser, inner_classes_attribute_parser,
+    line_number_table_attribute_parser, method_parameters_attribute_parser,
+    runtime_invisible_annotations_attribute_parser,
     runtime_invisible_parameter_annotations_attribute_parser,
     runtime_visible_annotations_attribute_parser,
     runtime_visible_parameter_annotations_attribute_parser,
     runtime_visible_type_annotations_attribute_parser, signature_attribute_parser,
-    source_debug_extension_parser, DefaultAnnotation, ElementValue, InnerClassAccessFlags,
-    TargetInfo,
+    source_debug_extension_parser,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    code_parser, instruction_parser, local_variable_type_table_parser, Instruction,
-    LocalVariableTableAttribute,
+    Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
+    local_variable_type_table_parser,
 };
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
