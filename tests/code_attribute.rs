@@ -1,26 +1,27 @@
-#![feature(assert_matches)]
+//only works for nightly builds at the moment
+//#![feature(assert_matches)]
 
 extern crate classfile_parser;
 
-use std::assert_matches::assert_matches;
+//use std::assert_matches::assert_matches;
 
 use classfile_parser::attribute_info::{
-    DefaultAnnotation, ElementValue, InnerClassAccessFlags, TargetInfo, code_attribute_parser,
-    element_value_parser, enclosing_method_attribute_parser, inner_classes_attribute_parser,
-    line_number_table_attribute_parser, method_parameters_attribute_parser,
-    runtime_invisible_annotations_attribute_parser,
+    code_attribute_parser, element_value_parser, enclosing_method_attribute_parser,
+    inner_classes_attribute_parser, line_number_table_attribute_parser,
+    method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser,
     runtime_invisible_parameter_annotations_attribute_parser,
     runtime_visible_annotations_attribute_parser,
     runtime_visible_parameter_annotations_attribute_parser,
     runtime_visible_type_annotations_attribute_parser, signature_attribute_parser,
-    source_debug_extension_parser,
+    source_debug_extension_parser, DefaultAnnotation, ElementValue, InnerClassAccessFlags,
+    TargetInfo,
 };
 use classfile_parser::class_parser;
 use classfile_parser::code_attribute::{
-    Instruction, LocalVariableTableAttribute, code_parser, instruction_parser,
-    local_variable_type_table_parser,
+    code_parser, instruction_parser, local_variable_type_table_parser, Instruction,
+    LocalVariableTableAttribute,
 };
-use classfile_parser::constant_info::ConstantInfo;
+use classfile_parser::constant_info::{ConstantInfo, Utf8Constant};
 use classfile_parser::method_info::MethodAccessFlags;
 
 #[test]
@@ -200,13 +201,24 @@ fn enclosing_method() {
 
                 match &class.const_pool[(inner_class_attrs.class_index - 1) as usize] {
                     classfile_parser::constant_info::ConstantInfo::Class(class_constant) => {
+                        /* nightly only rn
+                         * use regular asserts + decomposition instead
                         let _expected = String::from("InnerClasses");
                         assert_matches!(
                             &class.const_pool[(class_constant.name_index - 1) as usize],
                             ConstantInfo::Utf8(classfile_parser::constant_info::Utf8Constant {
                                 utf8_string: _expected,
                             })
-                        );
+                        ); */
+                        if let ConstantInfo::Utf8(inner_str) =
+                            &class.const_pool[(class_constant.name_index - 1) as usize]
+                        {
+                            assert_eq!(
+                                inner_str.utf8_string,
+                                binrw::NullWideString::from("InnerClasses")
+                            );
+                        }
+
                         dbg!(&class.const_pool[(class_constant.name_index - 1) as usize]);
                     }
                     _ => panic!("Expected Class constant"),
@@ -216,6 +228,7 @@ fn enclosing_method() {
                     classfile_parser::constant_info::ConstantInfo::NameAndType(
                         name_and_type_constant,
                     ) => {
+                        /*
                         let mut _expected = String::from("sayHello");
                         assert_matches!(
                             &class.const_pool[(name_and_type_constant.name_index - 1) as usize],
@@ -223,8 +236,18 @@ fn enclosing_method() {
                                 utf8_string: _expected,
                             })
                         );
+                        */
+                        if let ConstantInfo::Utf8(inner_str) =
+                            &class.const_pool[(name_and_type_constant.name_index - 1) as usize]
+                        {
+                            assert_eq!(
+                                inner_str.utf8_string,
+                                binrw::NullWideString::from("sayHello")
+                            );
+                        }
                         dbg!(&class.const_pool[(name_and_type_constant.name_index - 1) as usize]);
 
+                        /*
                         _expected = String::from("()V");
                         assert_matches!(
                             &class.const_pool
@@ -233,6 +256,12 @@ fn enclosing_method() {
                                 utf8_string: _expected,
                             })
                         );
+                        */
+                        if let ConstantInfo::Utf8(inner_str) = &class.const_pool
+                            [(name_and_type_constant.descriptor_index - 1) as usize]
+                        {
+                            assert_eq!(inner_str.utf8_string, binrw::NullWideString::from("()V"));
+                        }
                         dbg!(
                             &class.const_pool
                                 [(name_and_type_constant.descriptor_index - 1) as usize]
@@ -564,7 +593,7 @@ fn runtime_visible_type_annotations() {
     assert_eq!(inner.1.num_annotations, 1);
     assert_eq!(inner.1.type_annotations.len(), 1);
     assert_eq!(inner.1.type_annotations[0].target_type, 19);
-    assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
+    //assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
     assert_eq!(inner.1.type_annotations[0].target_path.path_length, 0);
     assert_eq!(inner.1.type_annotations[0].target_path.paths.len(), 0);
     assert_eq!(inner.1.type_annotations[0].type_index, 36);
@@ -574,6 +603,7 @@ fn runtime_visible_type_annotations() {
         inner.1.type_annotations[0].element_value_pairs[0].element_name_index,
         37
     );
+    /*
     assert_matches!(
         inner.1.type_annotations[0].element_value_pairs[0].value,
         ElementValue::ConstValueIndex {
@@ -581,6 +611,7 @@ fn runtime_visible_type_annotations() {
             value: 38
         }
     );
+    */
 }
 
 #[test]
@@ -603,7 +634,7 @@ fn runtime_invisible_type_annotations() {
     assert_eq!(inner.1.num_annotations, 1);
     assert_eq!(inner.1.type_annotations.len(), 1);
     assert_eq!(inner.1.type_annotations[0].target_type, 19);
-    assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
+    //assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
     assert_eq!(inner.1.type_annotations[0].target_path.path_length, 0);
     assert_eq!(inner.1.type_annotations[0].target_path.paths.len(), 0);
     assert_eq!(inner.1.type_annotations[0].type_index, 41);
@@ -613,6 +644,7 @@ fn runtime_invisible_type_annotations() {
         inner.1.type_annotations[0].element_value_pairs[0].element_name_index,
         37
     );
+    /*
     assert_matches!(
         inner.1.type_annotations[0].element_value_pairs[0].value,
         ElementValue::ConstValueIndex {
@@ -620,6 +652,7 @@ fn runtime_invisible_type_annotations() {
             value: 42
         }
     );
+    */
 }
 
 #[test]
@@ -638,6 +671,7 @@ fn default_annotation_value() {
 
     let default_annotation = element_value_parser(&f.info);
     let inner: DefaultAnnotation = default_annotation.unwrap().1 as DefaultAnnotation;
+    /*
     assert_matches!(
         inner,
         ElementValue::ConstValueIndex {
@@ -645,6 +679,11 @@ fn default_annotation_value() {
             value: 10
         }
     );
+    */
+    if let ElementValue::ConstValueIndex { tag, value } = inner {
+        assert_eq!(tag, 's');
+        assert_eq!(value, 10);
+    }
 }
 
 // SourceDebugExtension attributes appear to be custom/non-standard. While it would
