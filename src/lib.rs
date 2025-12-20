@@ -1,3 +1,4 @@
+#![feature(read_array)]
 //! A parser for [Java Classfiles](https://docs.oracle.com/javase/specs/jvms/se10/html/jvms-4.html)
 
 use std::fs::File;

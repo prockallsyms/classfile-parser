@@ -9,7 +9,7 @@ pub struct FieldInfo {
     pub name_index: u16,
     pub descriptor_index: u16,
     pub attributes_count: u16,
-    #[br(args { count: attributes_count.into() })]
+    #[br(count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
 }
 
@@ -31,13 +31,3 @@ bitflags! {
         const ENUM = 0x4000;       // 	Declared as an element of an enum.
     }
 }
-
-#[cfg(test)]
-#[allow(dead_code)]
-trait TraitTester:
-    Copy + Clone + PartialEq + Eq + PartialOrd + Ord + ::std::hash::Hash + ::std::fmt::Debug
-{
-}
-
-#[cfg(test)]
-impl TraitTester for FieldAccessFlags {}

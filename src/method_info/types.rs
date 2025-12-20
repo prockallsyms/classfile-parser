@@ -10,7 +10,7 @@ pub struct MethodInfo {
     pub name_index: u16,
     pub descriptor_index: u16,
     pub attributes_count: u16,
-    #[br(args { count: attributes_count.into() })]
+    #[br(count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
 }
 
@@ -34,13 +34,3 @@ bitflags! {
         const SYNTHETIC = 0x1000;    // 	Declared synthetic; not present in the source code.
     }
 }
-
-#[cfg(test)]
-#[allow(dead_code)]
-trait TraitTester:
-    Copy + Clone + PartialEq + Eq + PartialOrd + Ord + ::std::hash::Hash + ::std::fmt::Debug
-{
-}
-
-#[cfg(test)]
-impl TraitTester for MethodAccessFlags {}

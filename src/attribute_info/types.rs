@@ -6,7 +6,7 @@ use binrw::binrw;
 pub struct AttributeInfo {
     pub attribute_name_index: u16,
     pub attribute_length: u32,
-    #[br(args { count: attribute_length.try_into().unwrap() })]
+    #[br(count = attribute_length)]
     pub info: Vec<u8>,
 }
 

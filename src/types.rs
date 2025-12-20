@@ -12,22 +12,22 @@ pub struct ClassFile {
     pub minor_version: u16,
     pub major_version: u16,
     pub const_pool_size: u16,
-    #[br(args { count: const_pool_size.into() })]
+    #[br(count = const_pool_size)]
     pub const_pool: Vec<ConstantInfo>,
     pub access_flags: ClassAccessFlags,
     pub this_class: u16,
     pub super_class: u16,
     pub interfaces_count: u16,
-    #[br(args { count: interfaces_count.into() })]
+    #[br(count = interfaces_count)]
     pub interfaces: Vec<u16>,
     pub fields_count: u16,
-    #[br(args { count: fields_count.into() })]
+    #[br(count = fields_count)]
     pub fields: Vec<FieldInfo>,
     pub methods_count: u16,
-    #[br(args { count: methods_count.into() })]
+    #[br(count = methods_count)]
     pub methods: Vec<MethodInfo>,
     pub attributes_count: u16,
-    #[br(args { count: attributes_count.into() })]
+    #[br(count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
 }
 

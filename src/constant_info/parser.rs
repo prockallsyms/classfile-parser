@@ -11,7 +11,7 @@ fn utf8_constant(input: &[u8]) -> Utf8Constant {
     let utf8_string =
         cesu8::from_java_cesu8(input).unwrap_or_else(|_| String::from_utf8_lossy(input));
     Utf8Constant {
-        utf8_string: utf8_string.to_string().into(),
+        utf8_string: utf8_string.to_string(),
     }
 }
 
