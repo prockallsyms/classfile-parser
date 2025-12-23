@@ -1,16 +1,28 @@
-use crate::attribute_info::AttributeInfo;
+use crate::{attribute_info::AttributeInfo, InterpretInner};
 use binrw::binrw;
 
 #[derive(Clone, Debug)]
 #[binrw]
 #[brw(big)]
 pub struct FieldInfo {
+    #[br(dbg)]
     pub access_flags: FieldAccessFlags,
+    #[br(dbg)]
     pub name_index: u16,
+    #[br(dbg)]
     pub descriptor_index: u16,
+    #[br(dbg)]
     pub attributes_count: u16,
-    #[br(count = attributes_count)]
+    #[br(dbg, count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
+}
+
+impl InterpretInner for FieldInfo {
+    fn interpret_inner(&mut self, const_pool: &Vec<crate::constant_info::ConstantInfo>) {
+        for attr in &mut self.attributes {
+            attr.interpret_inner(const_pool);
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

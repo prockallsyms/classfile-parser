@@ -1,9 +1,10 @@
-use nom::{IResult, multi::count, number::complete::be_u16};
+use nom::{multi::count, number::complete::be_u16, IResult};
 
-use crate::attribute_info::attribute_parser;
+//use crate::attribute_info::attribute_parser;
 
 use crate::field_info::{FieldAccessFlags, FieldInfo};
 
+/*
 pub fn field_parser(input: &[u8]) -> IResult<&[u8], FieldInfo> {
     let (input, access_flags) = be_u16(input)?;
     let (input, name_index) = be_u16(input)?;
@@ -21,3 +22,4 @@ pub fn field_parser(input: &[u8]) -> IResult<&[u8], FieldInfo> {
         },
     ))
 }
+*/

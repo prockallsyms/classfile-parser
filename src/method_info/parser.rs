@@ -1,9 +1,10 @@
-use nom::{IResult, multi::count, number::complete::be_u16};
+use nom::{multi::count, number::complete::be_u16, IResult};
 
-use crate::attribute_info::attribute_parser;
+// use crate::attribute_info::attribute_parser;
 
 use crate::method_info::{MethodAccessFlags, MethodInfo};
 
+/*
 pub fn method_parser(input: &[u8]) -> IResult<&[u8], MethodInfo> {
     let (input, access_flags) = be_u16(input)?;
     let (input, name_index) = be_u16(input)?;
@@ -21,3 +22,4 @@ pub fn method_parser(input: &[u8]) -> IResult<&[u8], MethodInfo> {
         },
     ))
 }
+*/

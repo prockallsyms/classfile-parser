@@ -2,7 +2,7 @@
 //! A parser for [Java Classfiles](https://docs.oracle.com/javase/specs/jvms/se10/html/jvms-4.html)
 
 use std::fs::File;
-use std::io::{BufReader, prelude::*};
+use std::io::{prelude::*, BufReader};
 use std::path::Path;
 
 #[macro_use]
@@ -21,9 +21,10 @@ pub mod code_attribute;
 pub mod parser;
 pub mod types;
 
-pub use parser::class_parser;
+//pub use parser::class_parser;
 pub use types::*;
 
+/*
 /// Attempt to parse a class file given a path to a class file (without .class extension)
 ///
 /// ```rust
@@ -34,14 +35,20 @@ pub use types::*;
 ///     Err(ex) => panic!("Failed to parse: {}", ex),
 /// };
 /// ```
-pub fn parse_class(class_name: &str) -> Result<ClassFile, String> {
-    let class_file_name = &format!("{}.class", class_name);
+pub fn parse_class<A: AsRef<str>>(file_path: A) -> Result<ClassFile, String> {
+    /*
+    let class_file_name = &format!("{}.class", file_path.as_ref());
     let path = Path::new(class_file_name);
     let display = path.display();
+    */
 
-    let file = match File::open(path) {
+    let file = match File::open(file_path.as_ref()) {
         Err(why) => {
-            return Err(format!("Unable to open {}: {}", display, &why.to_string()));
+            return Err(format!(
+                "Unable to open {}: {}",
+                file_path.as_ref(),
+                &why.to_string()
+            ));
         }
         Ok(file) => file,
     };
@@ -82,3 +89,4 @@ pub fn parse_class_from_reader<T: Read>(reader: &mut T) -> Result<ClassFile, Str
         Err(e) => Err(format!("Failed to parse classfile: {}", e)),
     }
 }
+*/

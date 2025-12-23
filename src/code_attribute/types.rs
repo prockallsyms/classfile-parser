@@ -1,3 +1,5 @@
+use binrw::binrw;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Instruction {
     Aaload,
@@ -236,12 +238,17 @@ pub enum Instruction {
 }
 
 #[derive(Clone, Debug)]
+#[binrw]
+#[brw(big)]
 pub struct LocalVariableTableAttribute {
     pub local_variable_table_length: u16,
+    #[br(count = local_variable_table_length)]
     pub items: Vec<LocalVariableTableItem>,
 }
 
 #[derive(Clone, Debug)]
+#[binrw]
+#[brw(big)]
 pub struct LocalVariableTableItem {
     pub start_pc: u16,
     pub length: u16,
@@ -251,12 +258,17 @@ pub struct LocalVariableTableItem {
 }
 
 #[derive(Clone, Debug)]
+#[binrw]
+#[brw(big)]
 pub struct LocalVariableTypeTableAttribute {
     pub local_variable_type_table_length: u16,
+    #[br(count = local_variable_type_table_length)]
     pub local_variable_type_table: Vec<LocalVariableTypeTableItem>,
 }
 
 #[derive(Clone, Debug)]
+#[binrw]
+#[brw(big)]
 pub struct LocalVariableTypeTableItem {
     pub start_pc: u16,
     pub length: u16,

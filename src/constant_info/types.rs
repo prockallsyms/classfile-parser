@@ -35,7 +35,7 @@ pub enum ConstantInfo {
     Unusable,
 }
 
-#[binrw::parser(reader, endian)]
+#[binrw::parser(reader)]
 pub fn string_reader() -> BinResult<String> {
     let len = u16::from_be_bytes(reader.read_array()?);
     let mut string_bytes = vec![0; len as usize];
@@ -45,7 +45,7 @@ pub fn string_reader() -> BinResult<String> {
     Ok(utf8_string.to_string())
 }
 
-#[binrw::writer(writer, endian)]
+#[binrw::writer(writer)]
 pub fn string_writer<'a>(s: &'a String) -> BinResult<()> {
     let _ = writer.write(&u16::to_be_bytes(s.len() as u16));
     writer.write_all(s.as_bytes())?;

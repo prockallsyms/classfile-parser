@@ -1,4 +1,4 @@
-use crate::attribute_info::AttributeInfo;
+use crate::{InterpretInner, attribute_info::AttributeInfo};
 
 use binrw::binrw;
 
@@ -12,6 +12,14 @@ pub struct MethodInfo {
     pub attributes_count: u16,
     #[br(count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
+}
+
+impl InterpretInner for MethodInfo {
+    fn interpret_inner(&mut self, const_pool: &Vec<crate::constant_info::ConstantInfo>) {
+        for attr in &mut self.attributes {
+            attr.interpret_inner(const_pool);
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

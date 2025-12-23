@@ -3,6 +3,7 @@ mod types;
 
 pub use self::types::*;
 
+/*
 pub use self::parser::attribute_parser;
 pub use self::parser::bootstrap_methods_attribute_parser;
 pub use self::parser::code_attribute_parser;
@@ -23,3 +24,4 @@ pub use self::parser::signature_attribute_parser;
 pub use self::parser::source_debug_extension_parser;
 pub use self::parser::sourcefile_attribute_parser;
 pub use self::parser::stack_map_table_attribute_parser;
+*/

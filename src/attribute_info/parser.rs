@@ -1,18 +1,19 @@
 use nom::{
-    Err as BaseErr,
     bytes::complete::take,
     combinator::{map, success},
     error::{Error, ErrorKind},
     multi::count,
-    number::complete::{be_u8, be_u16, be_u32},
+    number::complete::{be_u16, be_u32, be_u8},
+    Err as BaseErr,
 };
 
-use crate::attribute_info::types::StackMapFrame::*;
+use crate::attribute_info::types::StackMapFrameInner::*;
 use crate::attribute_info::*;
 
 // Using a type alias here evades a Clippy warning about complex types.
 type Err<E> = BaseErr<Error<E>>;
 
+/*
 pub fn attribute_parser(input: &[u8]) -> Result<(&[u8], AttributeInfo), Err<&[u8]>> {
     let (input, attribute_name_index) = be_u16(input)?;
     let (input, attribute_length) = be_u32(input)?;
@@ -22,7 +23,7 @@ pub fn attribute_parser(input: &[u8]) -> Result<(&[u8], AttributeInfo), Err<&[u8
         AttributeInfo {
             attribute_name_index,
             attribute_length,
-            info: info.to_owned(),
+            info: ,
         },
     ))
 }
@@ -471,7 +472,7 @@ pub fn source_debug_extension_parser(
 
 pub fn line_number_table_attribute_parser(
     input: &[u8],
-) -> Result<(&[u8], LineNumberTable), Err<&[u8]>> {
+) -> Result<(&[u8], LineNumberTableAttribute), Err<&[u8]>> {
     let (input, line_number_table_length) = be_u16(input)?;
     let (input, line_number_table) = count(
         line_number_table_entry_parser,
@@ -479,7 +480,7 @@ pub fn line_number_table_attribute_parser(
     )(input)?;
     Ok((
         input,
-        LineNumberTable {
+        LineNumberTableAttribute {
             line_number_table_length,
             line_number_table,
         },
@@ -697,3 +698,4 @@ pub fn sourcefile_attribute_parser(
     let (input, sourcefile_index) = be_u16(input)?;
     Ok((input, SourceFileAttribute { sourcefile_index }))
 }
+*/

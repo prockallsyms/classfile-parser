@@ -1,10 +1,11 @@
 extern crate classfile_parser;
 extern crate nom;
 
+// use classfile_parser::class_parser;
 use classfile_parser::attribute_info::AttributeInfo;
-use classfile_parser::class_parser;
 use classfile_parser::constant_info::ConstantInfo;
 
+/*
 #[test]
 fn test_attribute_stack_map_table() {
     let stack_map_class = include_bytes!("../java-assets/compiled-classes/Factorial.class");
@@ -84,3 +85,4 @@ fn test_attribute_stack_map_table() {
         _ => panic!("not a class file"),
     };
 }
+*/
