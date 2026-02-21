@@ -1,6 +1,9 @@
-use crate::attribute_info::AttributeInfo;
+use crate::{
+    attribute_info::{AttributeInfo, AttributeInfoVariant, CodeAttribute},
+    InterpretInner,
+};
 
-use binrw::binrw;
+use binrw::{binrw, BinResult};
 
 #[derive(Clone, Debug)]
 #[binrw]
@@ -10,8 +13,71 @@ pub struct MethodInfo {
     pub name_index: u16,
     pub descriptor_index: u16,
     pub attributes_count: u16,
-    #[br(args { count: attributes_count.into() })]
+    #[br(count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
+}
+
+impl InterpretInner for MethodInfo {
+    fn interpret_inner(&mut self, const_pool: &Vec<crate::constant_info::ConstantInfo>) {
+        for attr in &mut self.attributes {
+            attr.interpret_inner(const_pool);
+        }
+    }
+}
+
+impl MethodInfo {
+    /// Returns a reference to the Code attribute, if present.
+    pub fn code(&self) -> Option<&CodeAttribute> {
+        self.attributes.iter().find_map(|a| match &a.info_parsed {
+            Some(AttributeInfoVariant::Code(c)) => Some(c),
+            _ => None,
+        })
+    }
+
+    /// Returns a mutable reference to the Code attribute, if present.
+    pub fn code_mut(&mut self) -> Option<&mut CodeAttribute> {
+        self.attributes
+            .iter_mut()
+            .find_map(|a| match &mut a.info_parsed {
+                Some(AttributeInfoVariant::Code(c)) => Some(c),
+                _ => None,
+            })
+    }
+
+    /// Returns a reference to the AttributeInfo containing the Code attribute.
+    /// Useful when you need to call `sync_from_parsed()` after modifying the code.
+    pub fn code_attribute_info(&self) -> Option<&AttributeInfo> {
+        self.attributes
+            .iter()
+            .find(|a| matches!(&a.info_parsed, Some(AttributeInfoVariant::Code(_))))
+    }
+
+    /// Returns a mutable reference to the AttributeInfo containing the Code attribute.
+    /// Useful when you need to call `sync_from_parsed()` after modifying the code.
+    pub fn code_attribute_info_mut(&mut self) -> Option<&mut AttributeInfo> {
+        self.attributes
+            .iter_mut()
+            .find(|a| matches!(&a.info_parsed, Some(AttributeInfoVariant::Code(_))))
+    }
+
+    /// Access the CodeAttribute inside a closure and auto-sync when done.
+    ///
+    /// Returns `None` if no Code attribute exists (e.g. abstract method),
+    /// `Some(Err(_))` if sync fails, `Some(Ok(R))` on success.
+    pub fn with_code<F, R>(&mut self, f: F) -> Option<BinResult<R>>
+    where
+        F: FnOnce(&mut CodeAttribute) -> R,
+    {
+        let attr = self
+            .attributes
+            .iter_mut()
+            .find(|a| matches!(&a.info_parsed, Some(AttributeInfoVariant::Code(_))))?;
+        let result = match &mut attr.info_parsed {
+            Some(AttributeInfoVariant::Code(code)) => f(code),
+            _ => unreachable!(),
+        };
+        Some(attr.sync_from_parsed().map(|()| result))
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -34,13 +100,3 @@ bitflags! {
         const SYNTHETIC = 0x1000;    // 	Declared synthetic; not present in the source code.
     }
 }
-
-#[cfg(test)]
-#[allow(dead_code)]
-trait TraitTester:
-    Copy + Clone + PartialEq + Eq + PartialOrd + Ord + ::std::hash::Hash + ::std::fmt::Debug
-{
-}
-
-#[cfg(test)]
-impl TraitTester for MethodAccessFlags {}

@@ -1,15 +1,23 @@
 extern crate classfile_parser;
-extern crate nom;
 
-use classfile_parser::class_parser;
+use std::io::Cursor;
+use classfile_parser::attribute_info::AttributeInfoVariant;
 use classfile_parser::constant_info::ConstantInfo;
+use binrw::prelude::*;
+use binrw::BinWrite;
+use classfile_parser::ClassFile;
+use std::fs::File;
+use std::io::prelude::*;
 
 #[test]
 fn test_valid_class() {
-    let valid_class = include_bytes!("../java-assets/compiled-classes/BasicClass.class");
-    let res = class_parser(valid_class);
+    let mut contents: Vec<u8> = Vec::new();
+    let mut valid_class = File::open("java-assets/compiled-classes/BasicClass.class").unwrap();
+    valid_class.read_to_end(&mut contents).unwrap();
+    let res = ClassFile::read(&mut Cursor::new(&mut contents));
+    dbg!(&res);
     match res {
-        Result::Ok((_, c)) => {
+        Result::Ok(c) => {
             println!(
                 "Valid class file, version {},{} const_pool({}), this=const[{}], super=const[{}], interfaces({}), fields({}), methods({}), attributes({}), access({:?})",
                 c.major_version,
@@ -29,10 +37,10 @@ fn test_valid_class() {
             println!("Constant pool:");
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
-                if let ConstantInfo::Utf8(ref c) = *const_item
-                    && c.utf8_string.to_string() == "Code"
-                {
-                    code_const_index = (const_index + 1) as u16;
+                if let ConstantInfo::Utf8(ref c) = *const_item {
+                    if c.utf8_string == "Code" {
+                        code_const_index = (const_index + 1) as u16;
+                    }
                 }
             }
             println!("Code index = {}", code_const_index);
@@ -69,10 +77,8 @@ fn test_valid_class() {
                 for a in &m.attributes {
                     if a.attribute_name_index == code_const_index {
                         println!("\t\tCode attr found, len = {}", a.attribute_length);
-                        let code_result =
-                            classfile_parser::attribute_info::code_attribute_parser(&a.info);
-                        match code_result {
-                            Result::Ok((_, code)) => {
+                        match a.info_parsed.as_ref().unwrap() {
+                            AttributeInfoVariant::Code(code) => {
                                 println!("\t\t\tCode! code_length = {}", code.code_length);
                             }
                             _ => panic!("Not a valid code attr?"),
@@ -89,78 +95,77 @@ fn test_valid_class() {
 
 #[test]
 fn test_utf_string_constants() {
-    let valid_class = include_bytes!("../java-assets/compiled-classes/UnicodeStrings.class");
-    let res = class_parser(valid_class);
+    let mut contents: Vec<u8> = Vec::new();
+    let mut utf8_class = File::open("java-assets/compiled-classes/UnicodeStrings.class").unwrap();
+    utf8_class.read_to_end(&mut contents).unwrap();
+    let res = ClassFile::read(&mut Cursor::new(contents));
     match res {
-        Result::Ok((_, c)) => {
-            let mut found_utf_maths_string = false;
-            let mut found_utf_runes_string = false;
-            let mut found_utf_braille_string = false;
-            let mut found_utf_modified_string = false;
-            let mut found_utf_unpaired_string = false;
-            for (const_index, const_item) in c.const_pool.iter().enumerate() {
-                println!("\t[{}] = {:?}", (const_index + 1), const_item);
-                if let ConstantInfo::Utf8(ref c) = *const_item {
-                    if c.utf8_string.to_string() == "2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm"
-                    {
-                        found_utf_maths_string = true;
-                    }
-                    if c.utf8_string.to_string()
-                        == "ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ"
-                    {
-                        found_utf_runes_string = true;
-                    }
-                    if c.utf8_string.to_string() == "⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌"
-                    {
-                        found_utf_braille_string = true;
-                    }
-                    if c.utf8_string.to_string() == "\0𠜎" {
-                        found_utf_modified_string = true;
-                    }
-                    if c.utf8_string.to_string() == "X���X" && c.utf8_string.len() == 5 {
-                        found_utf_unpaired_string = true;
-                    }
-                }
+        Result::Ok(c) => {
+            if let ConstantInfo::Utf8(ref con) = c.const_pool[13] {
+                assert_eq!(con.utf8_string, "2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm");
             }
 
-            assert!(
-                found_utf_maths_string
-                    & found_utf_runes_string
-                    & found_utf_braille_string
-                    & found_utf_modified_string
-                    & found_utf_unpaired_string,
-                "Failed to find unicode strings"
-            );
+            if let ConstantInfo::Utf8(ref con) = c.const_pool[21] {
+                assert_eq!(
+                    con.utf8_string,
+                    "ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ"
+                );
+            }
+
+            if let ConstantInfo::Utf8(ref con) = c.const_pool[23] {
+                assert_eq!(con.utf8_string, "⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌");
+            }
+
+            if let ConstantInfo::Utf8(ref con) = c.const_pool[25] {
+                assert_eq!(con.utf8_string, "\0𠜎");
+            }
+
+            if let ConstantInfo::Utf8(ref con) = c.const_pool[27] {
+                assert_eq!(con.utf8_string, "X���X");
+                assert_eq!(con.utf8_string.len(), 11);
+            }
+
+            for (const_index, const_item) in c.const_pool.iter().enumerate() {
+                println!("\t[{}] = {:?}", (const_index + 1), const_item);
+            }
         }
+
         _ => panic!("Not a class file"),
     }
 }
 
 #[test]
 fn test_malformed_class() {
-    let malformed_class = include_bytes!("../java-assets/compiled-classes/malformed.class");
-    let res = class_parser(malformed_class);
-    if let Result::Ok((_, _)) = res {
+    let mut contents: Vec<u8> = Vec::new();
+    let mut invalid_class = File::open("java-assets/compiled-classes/malformed.class").unwrap();
+    invalid_class.read_to_end(&mut contents).unwrap();
+    let res = ClassFile::read(&mut Cursor::new(contents));
+    if res.is_ok() {
         panic!("The file is not valid and shouldn't be parsed")
     };
 }
 
-// #[test]
-// fn test_constant_utf8() {
-//     let hello_world_data = &[
-//         // 0x01, // tag = 1
-//         0x00, 0x0C, // length = 12
-//         0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64, 0x21 // 'Hello world!' in UTF8
-//     ];
-//     let res = const_utf8(hello_world_data);
+#[test]
+fn test_round_trip() {
+    let mut original_bytes: Vec<u8> = Vec::new();
+    let mut class_file = File::open("java-assets/compiled-classes/BasicClass.class").unwrap();
+    class_file.read_to_end(&mut original_bytes).unwrap();
 
-//     match res {
-//         Result::Ok((_, c)) =>
-//         match c {
-//             Constant::Utf8(ref s) =>
-//                  println!("Valid UTF8 const: {}", s.utf8_string),
-//             _ => panic!("It's a const, but of what type?")
-//         },
-//         _ => panic!("Not a UTF type const?"),
-//     };
-// }
+    let parsed = ClassFile::read(&mut Cursor::new(&original_bytes)).expect("failed to parse class");
+
+    let mut written_bytes = Cursor::new(Vec::new());
+    parsed.write(&mut written_bytes).expect("failed to write class");
+    let written_bytes = written_bytes.into_inner();
+
+    assert_eq!(
+        original_bytes.len(),
+        written_bytes.len(),
+        "written class file has different length: original={}, written={}",
+        original_bytes.len(),
+        written_bytes.len()
+    );
+    assert_eq!(
+        original_bytes, written_bytes,
+        "written class file bytes differ from original"
+    );
+}
