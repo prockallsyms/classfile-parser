@@ -5,15 +5,11 @@ use binrw::binrw;
 #[binrw]
 #[brw(big)]
 pub struct FieldInfo {
-    #[br(dbg)]
     pub access_flags: FieldAccessFlags,
-    #[br(dbg)]
     pub name_index: u16,
-    #[br(dbg)]
     pub descriptor_index: u16,
-    #[br(dbg)]
     pub attributes_count: u16,
-    #[br(dbg, count = attributes_count)]
+    #[br(count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
 }
 

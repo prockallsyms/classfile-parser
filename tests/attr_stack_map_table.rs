@@ -1,31 +1,34 @@
 extern crate classfile_parser;
-extern crate nom;
 
-// use classfile_parser::class_parser;
-use classfile_parser::attribute_info::AttributeInfo;
+use std::fs::File;
+use std::io::prelude::*;
+use std::io::Cursor;
+
+use binrw::prelude::*;
+use classfile_parser::attribute_info::{AttributeInfoVariant, StackMapFrameInner};
 use classfile_parser::constant_info::ConstantInfo;
+use classfile_parser::ClassFile;
 
-/*
 #[test]
 fn test_attribute_stack_map_table() {
-    let stack_map_class = include_bytes!("../java-assets/compiled-classes/Factorial.class");
-    let res = class_parser(stack_map_class);
+    let mut contents: Vec<u8> = Vec::new();
+    let mut stack_map_class =
+        File::open("java-assets/compiled-classes/Factorial.class").unwrap();
+    stack_map_class.read_to_end(&mut contents).unwrap();
+    let res = ClassFile::read(&mut Cursor::new(&mut contents));
     match res {
-        Ok((_, c)) => {
-            use classfile_parser::attribute_info::code_attribute_parser;
-            use classfile_parser::attribute_info::stack_map_table_attribute_parser;
-
+        Ok(c) => {
             let mut stack_map_table_index = 0;
             println!("Constant pool:");
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
-                if let ConstantInfo::Utf8(ref c) = *const_item
-                    && c.utf8_string.to_string() == "StackMapTable"
-                {
-                    if stack_map_table_index != 0 {
-                        panic!("Should not find more than one StackMapTable constant");
+                if let ConstantInfo::Utf8(ref c) = *const_item {
+                    if c.utf8_string == "StackMapTable" {
+                        if stack_map_table_index != 0 {
+                            panic!("Should not find more than one StackMapTable constant");
+                        }
+                        stack_map_table_index = (const_index + 1) as u16;
                     }
-                    stack_map_table_index = (const_index + 1) as u16;
                 }
             }
             println!("Methods:");
@@ -40,49 +43,40 @@ fn test_attribute_stack_map_table() {
             assert_eq!(method.attributes.len(), 1);
             assert_eq!(method.attributes.len(), method.attributes_count as usize);
 
-            let code = match code_attribute_parser(&method.attributes[0].info) {
-                Ok((_, c)) => c,
+            // The top-level method attribute should be parsed as Code
+            let code = match method.attributes[0].info_parsed {
+                Some(AttributeInfoVariant::Code(ref code)) => code,
                 _ => panic!("Could not get code attribute"),
             };
 
-            let mut stack_map_table_attr_index = 0;
-            println!("Code Attrs:");
-            for (idx, code_attr) in code.attributes.iter().enumerate() {
-                println!("\t[{}] = {:?}", idx, code_attr);
-                let AttributeInfo {
-                    ref attribute_name_index,
-                    attribute_length: _,
-                    info: _,
-                } = *code_attr;
-                if attribute_name_index == &stack_map_table_index {
-                    stack_map_table_attr_index = idx;
-                }
-            }
+            // Sub-attributes inside CodeAttribute now have interpret_inner called
+            // automatically, so info_parsed is populated.
+            let smt_attr = code
+                .attributes
+                .iter()
+                .find(|a| a.attribute_name_index == stack_map_table_index)
+                .expect("StackMapTable attribute not found");
 
-            let attribute_info_bytes = &code.attributes[stack_map_table_attr_index].info;
-            let p = stack_map_table_attribute_parser(attribute_info_bytes);
-            match p {
-                Ok((data_rem, a)) => {
-                    // We should have used all the data in the stack map attribute
-                    assert!(data_rem.is_empty());
+            let smt = match smt_attr.info_parsed {
+                Some(AttributeInfoVariant::StackMapTable(ref smt)) => smt,
+                _ => panic!("StackMapTable sub-attribute was not parsed via interpret_inner"),
+            };
 
-                    assert_eq!(a.entries.len(), a.number_of_entries as usize);
-                    assert_eq!(a.entries.len(), 2);
+            assert_eq!(smt.entries.len(), smt.number_of_entries as usize);
+            assert_eq!(smt.entries.len(), 2);
 
-                    use classfile_parser::attribute_info::StackMapFrame::*;
-                    match a.entries[0] {
-                        SameFrame { .. } => {}
-                        _ => panic!("unexpected frame type for frame 0"),
-                    };
-                    match a.entries[1] {
-                        SameLocals1StackItemFrame { .. } => {}
-                        _ => panic!("unexpected frame type for frame 1: {:?}", &a.entries[1]),
-                    };
-                }
-                _ => panic!("failed to parse StackMapTable"),
+            match smt.entries[0].inner {
+                StackMapFrameInner::SameFrame { .. } => {}
+                _ => panic!("unexpected frame type for frame 0"),
+            };
+            match smt.entries[1].inner {
+                StackMapFrameInner::SameLocals1StackItemFrame { .. } => {}
+                _ => panic!(
+                    "unexpected frame type for frame 1: {:?}",
+                    &smt.entries[1]
+                ),
             };
         }
         _ => panic!("not a class file"),
     };
 }
-*/

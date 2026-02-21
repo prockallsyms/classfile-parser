@@ -1,12 +1,57 @@
-use std::io::Cursor;
+use std::io::{Cursor, Seek};
 
-use binrw::{binrw, BinRead, BinResult};
+use binrw::{binrw, io::TakeSeekExt, BinRead, BinResult, BinWrite, Endian};
 
 use crate::{
-    code_attribute::{LocalVariableTableAttribute, LocalVariableTypeTableAttribute},
+    code_attribute::{Instruction, LocalVariableTableAttribute, LocalVariableTypeTableAttribute},
     constant_info::{ConstantInfo, Utf8Constant},
     InterpretInner,
 };
+
+/// Custom parser for reading instructions from a code array.
+///
+/// Replaces `binrw::helpers::until_eof` because `Instruction` uses
+/// `return_unexpected_error` which produces `NoVariantMatch` on EOF.
+/// `until_eof` checks `err.is_eof()` to detect end-of-stream, but
+/// `NoVariantMatch.is_eof()` returns false, causing a spurious error.
+///
+/// This parser also computes the correct per-instruction `address`
+/// (offset within the code array) needed for tableswitch/lookupswitch
+/// alignment padding.
+#[binrw::parser(reader, endian)]
+fn parse_code_instructions(code_start: u64) -> BinResult<Vec<Instruction>> {
+    let mut instructions = Vec::new();
+    loop {
+        let pos = reader.stream_position()?;
+        let address = (pos - code_start) as u32;
+        match Instruction::read_options(reader, endian, binrw::args! { address: address }) {
+            Ok(instruction) => instructions.push(instruction),
+            Err(err) => {
+                reader.seek(std::io::SeekFrom::Start(pos))?;
+                let mut buf = [0u8; 1];
+                if reader.read(&mut buf)? == 0 {
+                    return Ok(instructions);
+                }
+                return Err(err);
+            }
+        }
+    }
+}
+
+/// Custom writer for serializing instructions back into the code array.
+///
+/// Tracks the running byte address so that tableswitch/lookupswitch
+/// padding is computed correctly.
+#[binrw::writer(writer, endian)]
+fn write_code_instructions(code: &Vec<Instruction>) -> BinResult<()> {
+    let start = writer.stream_position()?;
+    for instruction in code {
+        let pos = writer.stream_position()?;
+        let address = (pos - start) as u32;
+        instruction.write_options(writer, endian, binrw::args! { address: address })?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 #[binrw]
@@ -15,7 +60,7 @@ pub struct AttributeInfo {
     pub attribute_name_index: u16,
     pub attribute_length: u32,
     #[br(count = attribute_length)]
-    info: Vec<u8>,
+    pub info: Vec<u8>,
     #[brw(ignore)]
     pub info_parsed: Option<AttributeInfoVariant>,
 }
@@ -32,19 +77,31 @@ impl InterpretInner for AttributeInfo {
             self.attribute_length
         );
 
-        match &constant_pool[self.attribute_name_index as usize] {
+        match &constant_pool[(self.attribute_name_index - 1) as usize] {
             ConstantInfo::Utf8(Utf8Constant {
                 utf8_string: attr_name,
             }) => {
                 self.info_parsed = match attr_name.as_str() {
                     "ConstantValue" => {
                         let c =
-                            ConstantValueAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                            ConstantValueAttribute::read_be(&mut Cursor::new(&mut self.info)).unwrap();
                         Some(AttributeInfoVariant::ConstantValue(c))
                     }
                     "Code" => {
-                        let c = CodeAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::Code(c))
+                        let mut cursor = Cursor::new(&mut self.info);
+                        let c = CodeAttribute::read(&mut cursor);
+                        if let Err(binrw::Error::NoVariantMatch { pos }) = c {
+                            dbg!(&cursor);
+                            dbg!(&c);
+                            dbg!(&pos);
+                            None
+                        } else {
+                            let mut code = c.expect("malformed code was read");
+                            for attr in &mut code.attributes {
+                                attr.interpret_inner(constant_pool);
+                            }
+                            Some(AttributeInfoVariant::Code(code))
+                        }
                     }
                     "StackMapTable" => {
                         let c =
@@ -165,18 +222,130 @@ impl InterpretInner for AttributeInfo {
                             .unwrap();
                         Some(AttributeInfoVariant::MethodParameters(c))
                     }
-                    /*
-                    "Module" => panic!(
-                    "ModulePackage" => {},
-                    "ModuleMainClass" => {},
-                    */
-                    _ => panic!("Unhandled attribute type"),
+                    "Module" => {
+                        let c =
+                            ModuleAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                        Some(AttributeInfoVariant::Module(c))
+                    }
+                    "ModulePackages" => {
+                        let c =
+                            ModulePackagesAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                        Some(AttributeInfoVariant::ModulePackages(c))
+                    }
+                    "ModuleMainClass" => {
+                        let c =
+                            ModuleMainClassAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                        Some(AttributeInfoVariant::ModuleMainClass(c))
+                    }
+                    "NestHost" => {
+                        let c =
+                            NestHostAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                        Some(AttributeInfoVariant::NestHost(c))
+                    }
+                    "NestMembers" => {
+                        let c =
+                            NestMembersAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                        Some(AttributeInfoVariant::NestMembers(c))
+                    }
+                    "Record" => {
+                        let c =
+                            RecordAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                        let mut record = c;
+                        for component in &mut record.components {
+                            for attr in &mut component.attributes {
+                                attr.interpret_inner(constant_pool);
+                            }
+                        }
+                        Some(AttributeInfoVariant::Record(record))
+                    }
+                    "PermittedSubclasses" => {
+                        let c =
+                            PermittedSubclassesAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
+                        Some(AttributeInfoVariant::PermittedSubclasses(c))
+                    }
+                    unhandled => Some(AttributeInfoVariant::Unknown(String::from(unhandled))),
                 }
             }
-            _ => panic!(
-                "attribute info name index points to non-UTF8 constant value in the constant_pool"
+            unhandled => panic!(
+                "attribute info name index points to non-UTF8 constant value in the constant_pool:\n{:?}", unhandled
             ),
         }
+    }
+}
+
+impl AttributeInfo {
+    /// Serializes `info_parsed` back into `info` bytes and updates `attribute_length`.
+    ///
+    /// Call this after modifying `info_parsed` to keep the raw bytes in sync.
+    pub fn sync_from_parsed(&mut self) -> BinResult<()> {
+        let new_info = match &mut self.info_parsed {
+            Some(parsed) => {
+                let mut cursor = Cursor::new(Vec::new());
+                match parsed {
+                    AttributeInfoVariant::Code(v) => {
+                        v.sync_lengths()?;
+                        for attr in &mut v.attributes {
+                            attr.sync_from_parsed()?;
+                        }
+                        v.write(&mut cursor)?;
+                    }
+                    AttributeInfoVariant::ConstantValue(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::StackMapTable(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::Exceptions(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::InnerClasses(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::EnclosingMethod(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::Synthetic(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::Signature(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::SourceFile(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::SourceDebugExtension(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::LineNumberTable(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::LocalVariableTable(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::LocalVariableTypeTable(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::Deprecated(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::RuntimeVisibleAnnotations(v) => {
+                        v.write(&mut cursor)?
+                    }
+                    AttributeInfoVariant::RuntimeInvisibleAnnotations(v) => {
+                        v.write(&mut cursor)?
+                    }
+                    AttributeInfoVariant::RuntimeVisibleParameterAnnotations(v) => {
+                        v.write(&mut cursor)?
+                    }
+                    AttributeInfoVariant::RuntimeInvisibleParameterAnnotations(v) => {
+                        v.write(&mut cursor)?
+                    }
+                    AttributeInfoVariant::RuntimeVisibleTypeAnnotations(v) => {
+                        v.write(&mut cursor)?
+                    }
+                    AttributeInfoVariant::RuntimeInvisibleTypeAnnotations(v) => {
+                        v.write(&mut cursor)?
+                    }
+                    AttributeInfoVariant::AnnotationDefault(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::BootstrapMethods(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::MethodParameters(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::Module(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::ModulePackages(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::ModuleMainClass(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::NestHost(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::NestMembers(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::Record(v) => {
+                        for component in &mut v.components {
+                            for attr in &mut component.attributes {
+                                attr.sync_from_parsed()?;
+                            }
+                        }
+                        v.write(&mut cursor)?;
+                    }
+                    AttributeInfoVariant::PermittedSubclasses(v) => v.write(&mut cursor)?,
+                    AttributeInfoVariant::Unknown(_) => return Ok(()),
+                }
+                cursor.into_inner()
+            }
+            None => return Ok(()),
+        };
+        self.attribute_length = new_info.len() as u32;
+        self.info = new_info;
+        Ok(())
     }
 }
 
@@ -205,6 +374,14 @@ pub enum AttributeInfoVariant {
     AnnotationDefault(AnnotationDefaultAttribute),
     BootstrapMethods(BootstrapMethodsAttribute),
     MethodParameters(MethodParametersAttribute),
+    Module(ModuleAttribute),
+    ModulePackages(ModulePackagesAttribute),
+    ModuleMainClass(ModuleMainClassAttribute),
+    NestHost(NestHostAttribute),
+    NestMembers(NestMembersAttribute),
+    Record(RecordAttribute),
+    PermittedSubclasses(PermittedSubclassesAttribute),
+    Unknown(String),
 }
 
 #[derive(Clone, Debug)]
@@ -218,19 +395,89 @@ pub struct ExceptionEntry {
 
 #[derive(Clone, Debug)]
 #[binrw]
-#[brw(big)]
+#[brw(big, stream = s)]
 pub struct CodeAttribute {
     pub max_stack: u16,
     pub max_locals: u16,
     pub code_length: u32,
-    #[br(count = code_length)]
-    pub code: Vec<u8>,
+    #[br(map_stream = |s| s.take_seek(code_length as u64), parse_with = parse_code_instructions, args(s.stream_position()?))]
+    #[bw(write_with = write_code_instructions)]
+    pub code: Vec<Instruction>,
     pub exception_table_length: u16,
     #[br(count = exception_table_length)]
     pub exception_table: Vec<ExceptionEntry>,
     pub attributes_count: u16,
     #[br(count = attributes_count)]
     pub attributes: Vec<AttributeInfo>,
+}
+
+impl CodeAttribute {
+    /// Recalculates `code_length`, `exception_table_length`, and `attributes_count`
+    /// from actual vector contents. Call this after modifying instructions or other
+    /// code attribute internals.
+    pub fn sync_lengths(&mut self) -> BinResult<()> {
+        let mut buf = Cursor::new(Vec::new());
+        for instruction in &self.code {
+            let pos = buf.stream_position()?;
+            let address = pos as u32;
+            instruction
+                .write_options(&mut buf, Endian::Big, binrw::args! { address: address })?;
+        }
+        self.code_length = buf.into_inner().len() as u32;
+        self.exception_table_length = self.exception_table.len() as u16;
+        self.attributes_count = self.attributes.len() as u16;
+        Ok(())
+    }
+
+    /// Find the first instruction matching a predicate. Returns `(index, &Instruction)`.
+    pub fn find_instruction<F>(&self, predicate: F) -> Option<(usize, &Instruction)>
+    where
+        F: Fn(&Instruction) -> bool,
+    {
+        self.code
+            .iter()
+            .enumerate()
+            .find(|(_, instr)| predicate(instr))
+    }
+
+    /// Find all instructions matching a predicate. Returns `Vec<(index, &Instruction)>`.
+    pub fn find_instructions<F>(&self, predicate: F) -> Vec<(usize, &Instruction)>
+    where
+        F: Fn(&Instruction) -> bool,
+    {
+        self.code
+            .iter()
+            .enumerate()
+            .filter(|(_, instr)| predicate(instr))
+            .collect()
+    }
+
+    /// Replace the instruction at `index`.
+    pub fn replace_instruction(&mut self, index: usize, replacement: Instruction) {
+        self.code[index] = replacement;
+    }
+
+    /// Replace a range of instructions with the exact number of Nop instructions
+    /// needed to preserve `code_length`. Handles variable-length instructions
+    /// (tableswitch, lookupswitch) by serializing to compute byte sizes.
+    pub fn nop_out(&mut self, range: std::ops::Range<usize>) -> BinResult<()> {
+        let mut buf = Cursor::new(Vec::new());
+        // Serialize instructions before range to find byte offset
+        for instr in &self.code[..range.start] {
+            let address = buf.stream_position()? as u32;
+            instr.write_options(&mut buf, Endian::Big, binrw::args! { address })?;
+        }
+        // Serialize instructions in range to find byte count
+        let range_start_pos = buf.stream_position()?;
+        for instr in &self.code[range.clone()] {
+            let address = buf.stream_position()? as u32;
+            instr.write_options(&mut buf, Endian::Big, binrw::args! { address })?;
+        }
+        let byte_count = (buf.stream_position()? - range_start_pos) as usize;
+        self.code
+            .splice(range, vec![Instruction::Nop; byte_count]);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -371,6 +618,7 @@ pub struct RuntimeInvisibleTypeAnnotationsAttribute {
 #[brw(big)]
 pub struct TypeAnnotation {
     pub target_type: u8,
+    #[br(args(target_type))]
     pub target_info: TargetInfo,
     pub target_path: TypePath,
     pub type_index: u16,
@@ -381,35 +629,46 @@ pub struct TypeAnnotation {
 
 #[derive(Clone, Debug)]
 #[binrw]
+#[br(import(target_type: u8))]
 pub enum TargetInfo {
+    #[br(pre_assert(target_type == 0x00 || target_type == 0x01))]
     TypeParameter {
         type_parameter_index: u8,
     },
+    #[br(pre_assert(target_type == 0x10))]
     SuperType {
         supertype_index: u16,
     },
+    #[br(pre_assert(target_type == 0x11 || target_type == 0x12))]
     TypeParameterBound {
         type_parameter_index: u8,
         bound_index: u8,
     },
+    #[br(pre_assert(target_type >= 0x13 && target_type <= 0x15))]
     Empty,
+    #[br(pre_assert(target_type == 0x16))]
     FormalParameter {
         formal_parameter_index: u8,
     },
+    #[br(pre_assert(target_type == 0x17))]
     Throws {
         throws_type_index: u16,
     },
+    #[br(pre_assert(target_type == 0x40 || target_type == 0x41))]
     LocalVar {
         table_length: u16,
         #[br(count = table_length)]
         tables: Vec<LocalVarTableAnnotation>,
     },
+    #[br(pre_assert(target_type == 0x42))]
     Catch {
         exception_table_index: u16,
     },
+    #[br(pre_assert(target_type >= 0x43 && target_type <= 0x46))]
     Offset {
         offset: u16,
     },
+    #[br(pre_assert(target_type >= 0x47 && target_type <= 0x4B))]
     TypeArgument {
         offset: u16,
         type_argument_index: u8,
@@ -459,7 +718,9 @@ pub struct ElementValuePair {
 
 #[binrw::parser(reader)]
 fn custom_char_parser() -> BinResult<char> {
-    let c = u8::from_be_bytes(reader.read_array()?) as char;
+    let mut buf = [0u8; 1];
+    reader.read_exact(&mut buf)?;
+    let c = u8::from_be_bytes(buf) as char;
     Ok(c)
 }
 
@@ -486,8 +747,8 @@ pub enum ElementValue {
 pub struct ConstValueIndexValue {
     #[br(parse_with = custom_char_parser)]
     #[bw(write_with = custom_char_writer)]
-    tag: char,
-    value: u16,
+    pub tag: char,
+    pub value: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -536,26 +797,26 @@ pub struct LineNumberTableEntry {
 #[binrw]
 #[brw(big)]
 pub enum VerificationTypeInfo {
-    #[br(magic = 0u8)]
+    #[brw(magic = 0u8)]
     Top,
-    #[br(magic = 1u8)]
+    #[brw(magic = 1u8)]
     Integer,
-    #[br(magic = 2u8)]
+    #[brw(magic = 2u8)]
     Float,
-    #[br(magic = 3u8)]
+    #[brw(magic = 3u8)]
     Double,
-    #[br(magic = 4u8)]
+    #[brw(magic = 4u8)]
     Long,
-    #[br(magic = 5u8)]
+    #[brw(magic = 5u8)]
     Null,
-    #[br(magic = 6u8)]
+    #[brw(magic = 6u8)]
     UninitializedThis,
-    #[br(magic = 7u8)]
+    #[brw(magic = 7u8)]
     Object {
         /// An index into the constant pool for the class of the object
         class: u16,
     },
-    #[br(magic = 8u8)]
+    #[brw(magic = 8u8)]
     Uninitialized {
         /// Offset into associated code array of a new instruction
         /// that created the object being stored here.
@@ -567,9 +828,9 @@ pub enum VerificationTypeInfo {
 #[binrw]
 #[brw(big)]
 pub struct StackMapFrame {
-    frame_type: u8,
+    pub frame_type: u8,
     #[br(args(frame_type))]
-    inner: StackMapFrameInner,
+    pub inner: StackMapFrameInner,
 }
 
 #[derive(Clone, Debug)]
@@ -676,4 +937,130 @@ pub struct SourceFileAttribute {
     /// The value of the sourcefile_index item must be a valid index into the constant_pool table.
     /// The constant_pool entry at that index must be a CONSTANT_Utf8_info structure representing a string.
     pub sourcefile_index: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct ModuleAttribute {
+    pub module_name_index: u16,
+    pub module_flags: u16,
+    pub module_version_index: u16,
+    pub requires_count: u16,
+    #[br(count = requires_count)]
+    pub requires: Vec<ModuleRequiresAttribute>,
+    pub exports_count: u16,
+    #[br(count = exports_count)]
+    pub exports: Vec<ModuleExportsAttribute>,
+    pub opens_count: u16,
+    #[br(count = opens_count)]
+    pub opens: Vec<ModuleOpensAttribute>,
+    pub uses_count: u16,
+    #[br(count = uses_count)]
+    pub uses: Vec<u16>,
+    pub provides_count: u16,
+    #[br(count = provides_count)]
+    pub provides: Vec<ModuleProvidesAttribute>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct ModuleRequiresAttribute {
+    pub requires_index: u16,
+    pub requires_flags: u16,
+    pub requires_version_index: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct ModuleExportsAttribute {
+    pub exports_index: u16,
+    pub exports_flags: u16,
+    pub exports_to_count: u16,
+    #[br(count = exports_to_count)]
+    pub exports_to_index: Vec<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct ModuleOpensAttribute {
+    pub opens_index: u16,
+    pub opens_flags: u16,
+    pub opens_to_count: u16,
+    #[br(count = opens_to_count)]
+    pub opens_to_index: Vec<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct ModuleProvidesAttribute {
+    pub provides_index: u16,
+    pub provides_with_count: u16,
+    #[br(count = provides_with_count)]
+    pub provides_with_index: Vec<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct ModulePackagesAttribute {
+    pub package_count: u16,
+    #[br(count = package_count)]
+    pub package_index: Vec<u16>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct ModuleMainClassAttribute {
+    pub main_class_index: u16,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct NestHostAttribute {
+    pub host_class_index: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct NestMembersAttribute {
+    pub number_of_classes: u16,
+    #[br(count = number_of_classes)]
+    pub classes: Vec<u16>,
+}
+
+#[derive(Clone, Debug)]
+#[binrw]
+#[brw(big)]
+pub struct RecordAttribute {
+    pub components_count: u16,
+    #[br(count = components_count)]
+    pub components: Vec<RecordComponentInfo>,
+}
+
+#[derive(Clone, Debug)]
+#[binrw]
+#[brw(big)]
+pub struct RecordComponentInfo {
+    pub name_index: u16,
+    pub descriptor_index: u16,
+    pub attributes_count: u16,
+    #[br(count = attributes_count)]
+    pub attributes: Vec<AttributeInfo>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[binrw]
+#[brw(big)]
+pub struct PermittedSubclassesAttribute {
+    pub number_of_classes: u16,
+    #[br(count = number_of_classes)]
+    pub classes: Vec<u16>,
 }

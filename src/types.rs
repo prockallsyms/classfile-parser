@@ -1,13 +1,36 @@
+use std::io::{Read, Seek};
+
 use crate::attribute_info::AttributeInfo;
-use crate::constant_info::ConstantInfo;
+use crate::constant_info::{
+    ClassConstant, ConstantInfo, NameAndTypeConstant, StringConstant, Utf8Constant,
+};
 use crate::field_info::FieldInfo;
 use crate::method_info::MethodInfo;
 
 use binrw::{
     binrw,
     meta::{EndianKind, ReadEndian},
-    BinRead, BinWrite, Endian, VecArgs,
+    BinRead,
+    BinResult,
+    BinWrite,
+    Endian,
+    VecArgs,
 };
+
+/// Custom writer for the constant pool that skips Unusable sentinel entries.
+///
+/// On read, Long and Double constants occupy two slots in the constant pool,
+/// and we insert an `Unusable` placeholder for the second slot. On write,
+/// we must skip these placeholders since they are not part of the binary format.
+#[binrw::writer(writer, endian)]
+fn write_const_pool(pool: &Vec<ConstantInfo>) -> BinResult<()> {
+    for item in pool {
+        if !matches!(item, ConstantInfo::Unusable) {
+            item.write_options(writer, endian, ())?;
+        }
+    }
+    Ok(())
+}
 
 #[derive(BinWrite, Clone, Debug)]
 #[brw(big, magic = b"\xca\xfe\xba\xbe")]
@@ -15,6 +38,7 @@ pub struct ClassFile {
     pub minor_version: u16,
     pub major_version: u16,
     pub const_pool_size: u16,
+    #[bw(write_with = write_const_pool)]
     pub const_pool: Vec<ConstantInfo>,
     pub access_flags: ClassAccessFlags,
     pub this_class: u16,
@@ -37,6 +61,25 @@ impl ReadEndian for ClassFile {
     const ENDIAN: EndianKind = EndianKind::Endian(Endian::Big);
 }
 
+fn const_pool_parser<R: Read + Seek>(
+    r: &mut R,
+    endian: Endian,
+    args: VecArgs<()>,
+) -> BinResult<Vec<ConstantInfo>> {
+    let mut v = vec![];
+    while v.len() < args.count - 1 {
+        v.push(ConstantInfo::read_options(r, endian, args.inner)?);
+        if matches!(
+            v.last().unwrap(),
+            ConstantInfo::Double(_) | ConstantInfo::Long(_)
+        ) {
+            v.push(ConstantInfo::Unusable);
+        }
+    }
+
+    Ok(v)
+}
+
 impl BinRead for ClassFile {
     type Args<'a> = ();
 
@@ -47,13 +90,16 @@ impl BinRead for ClassFile {
     ) -> binrw::BinResult<Self> {
         let magic = u32::read_options(reader, Endian::Big, ())?;
         if magic != u32::from_be_bytes([0xca, 0xfe, 0xba, 0xbe]) {
-            return Err(binrw::Error::BadMagic { pos: 0, found: Box::new(magic) })
+            return Err(binrw::Error::BadMagic {
+                pos: 0,
+                found: Box::new(magic),
+            });
         }
 
         let minor_version = u16::read_options(reader, Endian::Big, ())?;
         let major_version = u16::read_options(reader, Endian::Big, ())?;
         let const_pool_size = u16::read_options(reader, Endian::Big, ())?;
-        let const_pool = Vec::<ConstantInfo>::read_options(
+        let const_pool = const_pool_parser(
             reader,
             Endian::Big,
             VecArgs {
@@ -61,14 +107,11 @@ impl BinRead for ClassFile {
                 inner: (),
             },
         )?;
+
         let access_flags = ClassAccessFlags::read_options(reader, Endian::Big, ())?;
-        dbg!(&access_flags);
         let this_class = u16::read_options(reader, Endian::Big, ())?;
-        dbg!(&this_class);
         let super_class = u16::read_options(reader, Endian::Big, ())?;
-        dbg!(&super_class);
         let interfaces_count = u16::read_options(reader, Endian::Big, ())?;
-        dbg!(&interfaces_count);
         let interfaces = Vec::<u16>::read_options(
             reader,
             Endian::Big,
@@ -78,7 +121,6 @@ impl BinRead for ClassFile {
             },
         )?;
         let fields_count = u16::read_options(reader, Endian::Big, ())?;
-        dbg!(&fields_count);
         let mut fields = Vec::<FieldInfo>::read_options(
             reader,
             Endian::Big,
@@ -107,7 +149,7 @@ impl BinRead for ClassFile {
                 inner: (),
             },
         )?;
-        
+
         for field in &mut fields {
             field.interpret_inner(&const_pool);
         }
@@ -137,6 +179,185 @@ impl BinRead for ClassFile {
             attributes_count,
             attributes,
         })
+    }
+}
+
+impl ClassFile {
+    /// Recalculates all count fields from actual vector lengths.
+    /// Call this after adding or removing entries from const_pool, interfaces,
+    /// fields, methods, or attributes.
+    pub fn sync_counts(&mut self) {
+        self.const_pool_size = (self.const_pool.len() + 1) as u16;
+        self.interfaces_count = self.interfaces.len() as u16;
+        self.fields_count = self.fields.len() as u16;
+        self.methods_count = self.methods.len() as u16;
+        self.attributes_count = self.attributes.len() as u16;
+    }
+
+    /// Look up a UTF-8 constant pool entry by its 1-based index.
+    /// Returns `None` if the index is out of range or does not point to a Utf8 entry.
+    pub fn get_utf8(&self, index: u16) -> Option<&str> {
+        match self.const_pool.get((index - 1) as usize)? {
+            ConstantInfo::Utf8(u) => Some(&u.utf8_string),
+            _ => None,
+        }
+    }
+
+    /// Find the 1-based constant pool index of a UTF-8 entry matching the given string.
+    pub fn find_utf8_index(&self, value: &str) -> Option<u16> {
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::Utf8(u) = entry {
+                if u.utf8_string == value {
+                    return Some((i + 1) as u16);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find a method by name.
+    pub fn find_method(&self, name: &str) -> Option<&MethodInfo> {
+        self.methods
+            .iter()
+            .find(|m| self.get_utf8(m.name_index) == Some(name))
+    }
+
+    /// Find a method by name, returning a mutable reference.
+    pub fn find_method_mut(&mut self, name: &str) -> Option<&mut MethodInfo> {
+        let idx = self
+            .methods
+            .iter()
+            .position(|m| self.get_utf8(m.name_index) == Some(name))?;
+        Some(&mut self.methods[idx])
+    }
+
+    /// Find a field by name.
+    pub fn find_field(&self, name: &str) -> Option<&FieldInfo> {
+        self.fields
+            .iter()
+            .find(|f| self.get_utf8(f.name_index) == Some(name))
+    }
+
+    /// Find a field by name, returning a mutable reference.
+    pub fn find_field_mut(&mut self, name: &str) -> Option<&mut FieldInfo> {
+        let idx = self
+            .fields
+            .iter()
+            .position(|f| self.get_utf8(f.name_index) == Some(name))?;
+        Some(&mut self.fields[idx])
+    }
+
+    /// Add a UTF-8 constant to the pool. Returns the 1-based index.
+    /// Always adds a new entry (no dedup). Does NOT call `sync_counts()`.
+    pub fn add_utf8(&mut self, value: &str) -> u16 {
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool.push(ConstantInfo::Utf8(Utf8Constant {
+            utf8_string: String::from(value),
+        }));
+        index
+    }
+
+    /// Get or add a UTF-8 constant. Returns existing index if found, otherwise adds.
+    pub fn get_or_add_utf8(&mut self, value: &str) -> u16 {
+        if let Some(idx) = self.find_utf8_index(value) {
+            idx
+        } else {
+            self.add_utf8(value)
+        }
+    }
+
+    /// Add a String constant (Utf8 + String pair). Returns the String constant's 1-based index.
+    pub fn add_string(&mut self, value: &str) -> u16 {
+        let utf8_index = self.add_utf8(value);
+        let string_index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::String(StringConstant {
+                string_index: utf8_index,
+            }));
+        string_index
+    }
+
+    /// Get or add a String constant, deduplicating both the Utf8 and String entries.
+    pub fn get_or_add_string(&mut self, value: &str) -> u16 {
+        let utf8_index = self.get_or_add_utf8(value);
+        // Search for an existing String constant pointing to this Utf8
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::String(s) = entry {
+                if s.string_index == utf8_index {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let string_index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::String(StringConstant {
+                string_index: utf8_index,
+            }));
+        string_index
+    }
+
+    /// Add a Class constant (Utf8 + Class pair). `name` in internal form (e.g. `"java/lang/String"`).
+    /// Returns the Class constant's 1-based index.
+    pub fn add_class(&mut self, name: &str) -> u16 {
+        let utf8_index = self.add_utf8(name);
+        let class_index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::Class(ClassConstant {
+                name_index: utf8_index,
+            }));
+        class_index
+    }
+
+    /// Get or add a Class constant, deduplicating both the Utf8 and Class entries.
+    pub fn get_or_add_class(&mut self, name: &str) -> u16 {
+        let utf8_index = self.get_or_add_utf8(name);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::Class(c) = entry {
+                if c.name_index == utf8_index {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let class_index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::Class(ClassConstant {
+                name_index: utf8_index,
+            }));
+        class_index
+    }
+
+    /// Add a NameAndType constant. Utf8 entries for `name` and `descriptor` are deduped
+    /// via `get_or_add_utf8`. Always adds a new NameAndType entry.
+    pub fn add_name_and_type(&mut self, name: &str, descriptor: &str) -> u16 {
+        let name_index = self.get_or_add_utf8(name);
+        let descriptor_index = self.get_or_add_utf8(descriptor);
+        let nat_index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::NameAndType(NameAndTypeConstant {
+                name_index,
+                descriptor_index,
+            }));
+        nat_index
+    }
+
+    /// Sync everything after a patching session: calls `sync_from_parsed()` on all
+    /// attributes (methods, fields, class-level), then `sync_counts()`.
+    pub fn sync_all(&mut self) -> BinResult<()> {
+        for method in &mut self.methods {
+            for attr in &mut method.attributes {
+                attr.sync_from_parsed()?;
+            }
+        }
+        for field in &mut self.fields {
+            for attr in &mut field.attributes {
+                attr.sync_from_parsed()?;
+            }
+        }
+        for attr in &mut self.attributes {
+            attr.sync_from_parsed()?;
+        }
+        self.sync_counts();
+        Ok(())
     }
 }
 

@@ -1,11 +1,10 @@
 extern crate classfile_parser;
-extern crate nom;
 
 use std::io::Cursor;
-use std::io::BufReader;
 use classfile_parser::attribute_info::AttributeInfoVariant;
 use classfile_parser::constant_info::ConstantInfo;
 use binrw::prelude::*;
+use binrw::BinWrite;
 use classfile_parser::ClassFile;
 use std::fs::File;
 use std::io::prelude::*;
@@ -38,10 +37,10 @@ fn test_valid_class() {
             println!("Constant pool:");
             for (const_index, const_item) in c.const_pool.iter().enumerate() {
                 println!("\t[{}] = {:?}", (const_index + 1), const_item);
-                if let ConstantInfo::Utf8(ref c) = *const_item
-                    && c.utf8_string == "Code"
-                {
-                    code_const_index = (const_index + 1) as u16;
+                if let ConstantInfo::Utf8(ref c) = *const_item {
+                    if c.utf8_string == "Code" {
+                        code_const_index = (const_index + 1) as u16;
+                    }
                 }
             }
             println!("Code index = {}", code_const_index);
@@ -94,7 +93,6 @@ fn test_valid_class() {
     };
 }
 
-/*
 #[test]
 fn test_utf_string_constants() {
     let mut contents: Vec<u8> = Vec::new();
@@ -135,7 +133,6 @@ fn test_utf_string_constants() {
         _ => panic!("Not a class file"),
     }
 }
-*/
 
 #[test]
 fn test_malformed_class() {
@@ -146,4 +143,29 @@ fn test_malformed_class() {
     if res.is_ok() {
         panic!("The file is not valid and shouldn't be parsed")
     };
+}
+
+#[test]
+fn test_round_trip() {
+    let mut original_bytes: Vec<u8> = Vec::new();
+    let mut class_file = File::open("java-assets/compiled-classes/BasicClass.class").unwrap();
+    class_file.read_to_end(&mut original_bytes).unwrap();
+
+    let parsed = ClassFile::read(&mut Cursor::new(&original_bytes)).expect("failed to parse class");
+
+    let mut written_bytes = Cursor::new(Vec::new());
+    parsed.write(&mut written_bytes).expect("failed to write class");
+    let written_bytes = written_bytes.into_inner();
+
+    assert_eq!(
+        original_bytes.len(),
+        written_bytes.len(),
+        "written class file has different length: original={}, written={}",
+        original_bytes.len(),
+        written_bytes.len()
+    );
+    assert_eq!(
+        original_bytes, written_bytes,
+        "written class file bytes differ from original"
+    );
 }

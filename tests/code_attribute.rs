@@ -1,59 +1,58 @@
-#![feature(assert_matches)]
-
 extern crate classfile_parser;
 
-use std::assert_matches::assert_matches;
-use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
+use assert_matches::assert_matches;
 use binrw::BinRead;
-/*
 use classfile_parser::attribute_info::{
-    code_attribute_parser, element_value_parser, enclosing_method_attribute_parser,
-    inner_classes_attribute_parser, line_number_table_attribute_parser,
-    method_parameters_attribute_parser, runtime_invisible_annotations_attribute_parser,
-    runtime_invisible_parameter_annotations_attribute_parser,
-    runtime_visible_annotations_attribute_parser,
-    runtime_visible_parameter_annotations_attribute_parser,
-    runtime_visible_type_annotations_attribute_parser, signature_attribute_parser, source_debug_extension_parser, 
-};
-*/
-use classfile_parser::attribute_info::{
-    AnnotationDefaultAttribute, ElementValue, InnerClassAccessFlags, TargetInfo,
+    AttributeInfoVariant, ElementValue, InnerClassAccessFlags, LineNumberTableAttribute,
+    TargetInfo,
 };
 use classfile_parser::code_attribute::{
-    // code_parser, instruction_parser, local_variable_type_table_parser, 
-    Instruction, LocalVariableTableAttribute,
+    Instruction, LocalVariableTableAttribute, LocalVariableTypeTableAttribute,
 };
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::method_info::MethodAccessFlags;
-use classfile_parser::{
-    // class_parser,
-    ClassFile
-};
+use classfile_parser::ClassFile;
 
-/*
+fn lookup_string(c: &ClassFile, index: u16) -> Option<String> {
+    match &c.const_pool[(index - 1) as usize] {
+        classfile_parser::constant_info::ConstantInfo::Utf8(utf8) => {
+            Some(utf8.utf8_string.to_string())
+        }
+        _ => None,
+    }
+}
+
 #[test]
 fn test_simple() {
-    let instruction = &[0x11, 0xff, 0xfe];
+    let mut instruction = vec![0x11, 0xff, 0xfe];
     assert_eq!(
-        Ok((&[][..], Instruction::Sipush(-2i16))),
-        instruction_parser(instruction, 0)
+        Instruction::Sipush(-2i16),
+        Instruction::read_be_args(
+            &mut Cursor::new(&mut instruction),
+            binrw::args! { address: 0 }
+        )
+        .unwrap()
     );
 }
 
 #[test]
 fn test_wide() {
-    let instruction = &[0xc4, 0x15, 0xaa, 0xbb];
+    let mut instruction = vec![0xc4, 0x15, 0xaa, 0xbb];
     assert_eq!(
-        Ok((&[][..], Instruction::IloadWide(0xaabb))),
-        instruction_parser(instruction, 0)
+        Instruction::IloadWide(0xaabb),
+        Instruction::read_be_args(
+            &mut Cursor::new(&mut instruction),
+            binrw::args! { address: 0 }
+        )
+        .unwrap()
     );
 }
 
 #[test]
 fn test_alignment() {
-    let instructions = vec![
+    let mut instructions: Vec<(u32, Vec<u8>)> = vec![
         (
             3,
             vec![
@@ -67,87 +66,93 @@ fn test_alignment() {
             ],
         ),
     ];
-    let expected = Ok((
-        &[][..],
-        Instruction::Tableswitch {
-            default: 10,
-            low: 20,
-            high: 21,
-            offsets: vec![30, 31],
-        },
-    ));
-    for (address, instruction) in instructions {
-        assert_eq!(expected, instruction_parser(&instruction, address));
+
+    let expected = Instruction::Tableswitch {
+        default: 10,
+        low: 20,
+        high: 21,
+        offsets: vec![30, 31],
+    };
+
+    for (address, instruction) in &mut instructions {
+        assert_eq!(
+            expected,
+            Instruction::read_be_args(
+                &mut Cursor::new(instruction),
+                binrw::args! { address: *address }
+            )
+            .unwrap()
+        );
     }
 }
 
 #[test]
 fn test_incomplete() {
     let code = &[0x59, 0x59, 0xc4, 0x15]; // dup, dup, <incomplete iload/wide>
-    let expected = Ok((
-        &[0xc4, 0x15][..],
-        vec![(0, Instruction::Dup), (1, Instruction::Dup)],
-    ));
-    assert_eq!(expected, code_parser(code));
+    let mut c = Cursor::new(code);
+
+    assert_eq!(
+        Instruction::Dup,
+        Instruction::read_be_args(&mut c, binrw::args! { address: 0 }).unwrap()
+    );
+    assert_eq!(
+        Instruction::Dup,
+        Instruction::read_be_args(&mut c, binrw::args! { address: 0 }).unwrap()
+    );
+
+    let next = Instruction::read_be_args(&mut c, binrw::args! { address: 0 });
+    if let binrw::Error::NoVariantMatch { pos } = next.unwrap_err() {
+        assert_eq!(pos, 2);
+    }
 }
 
 #[test]
 fn test_class() {
-    let mut contents: Vec<u8> = Vec::new();
-    File::open("java-assets/compiled-classes/Instructions.class")
-        .unwrap()
-        .read_to_end(&mut contents)
-        .unwrap();
-    let class = ClassFile::read(&mut Cursor::new(contents)).unwrap();
-    let method_info = &class
+    let class_bytes = include_bytes!("../java-assets/compiled-classes/Instructions.class");
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
+    let method_info = class
         .methods
         .iter()
         .find(|m| m.access_flags.contains(MethodAccessFlags::STATIC))
         .unwrap();
-    let (_, code_attribute) = code_attribute_parser(&method_info.attributes[0].info).unwrap();
 
-    let parsed = code_parser(&code_attribute.code);
-
-    assert!(parsed.is_ok());
-    assert_eq!(64, parsed.unwrap().1.len());
-}
-*/
-
-fn lookup_string(c: &classfile_parser::ClassFile, index: u16) -> Option<String> {
-    let con = &c.const_pool[(index - 1) as usize];
-    match con {
-        classfile_parser::constant_info::ConstantInfo::Utf8(utf8) => {
-            Some(utf8.utf8_string.to_string())
+    let code_attr = method_info.attributes.iter().find_map(|attr| {
+        if let Some(AttributeInfoVariant::Code(code)) = &attr.info_parsed {
+            Some(code)
+        } else {
+            None
         }
-        _ => None,
-    }
+    });
+
+    let code = code_attr.expect("Should have found a Code attribute");
+    assert_eq!(64, code.code.len());
 }
 
-/*
 #[test]
 fn method_parameters() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/BasicClass.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
-    let method_info = &class.methods.iter().last().unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
+    let method_info = class.methods.iter().last().unwrap();
 
     // The class was not compiled with "javac -parameters" this required being able to find
     // MethodParameters in the class file, for example:
     // javac -parameters ./java-assets/src/uk/co/palmr/classfileparser/BasicClass.java -d ./java-assets/compiled-classes ; cp ./java-assets/compiled-classes/uk/co/palmr/classfileparser/BasicClass.class ./java-assets/compiled-classes/BasicClass.class
     assert_eq!(method_info.attributes.len(), 2);
-    let (_, method_parameters) =
-        method_parameters_attribute_parser(&method_info.attributes[1].info).unwrap();
+
+    let method_parameters = method_info.attributes.iter().find_map(|attr| {
+        if let Some(AttributeInfoVariant::MethodParameters(mp)) = &attr.info_parsed {
+            Some(mp)
+        } else {
+            None
+        }
+    }).expect("Should have found MethodParameters attribute");
+
     assert_eq!(
-        lookup_string(
-            &class,
-            method_parameters.parameters.first().unwrap().name_index
-        ),
+        lookup_string(&class, method_parameters.parameters.first().unwrap().name_index),
         Some("a".to_string())
     );
     assert_eq!(
-        lookup_string(
-            &class,
-            method_parameters.parameters.get(1).unwrap().name_index
-        ),
+        lookup_string(&class, method_parameters.parameters.get(1).unwrap().name_index),
         Some("b".to_string())
     );
 }
@@ -155,13 +160,11 @@ fn method_parameters() {
 #[test]
 fn inner_classes() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
 
     for attr in &class.attributes {
-        match lookup_string(&class, attr.attribute_name_index) {
-            Some(x) if x == "InnerClasses" => {
-                let (_, inner_class_attrs) = inner_classes_attribute_parser(&attr.info).unwrap();
-
+        match &attr.info_parsed {
+            Some(AttributeInfoVariant::InnerClasses(inner_class_attrs)) => {
                 assert_eq!(inner_class_attrs.number_of_classes, 4);
 
                 assert_eq!(
@@ -169,7 +172,7 @@ fn inner_classes() {
                     inner_class_attrs.classes.len() as u16
                 );
 
-                for c in inner_class_attrs.classes {
+                for c in &inner_class_attrs.classes {
                     dbg!(&class.const_pool[(c.inner_class_info_index - 1) as usize]);
 
                     // only == 0 when this class is a top-level class or interface, or when it's
@@ -194,7 +197,7 @@ fn inner_classes() {
             }
             Some(_) => {}
             None => panic!(
-                "Could not find attribute name for index {}",
+                "Could not parse attribute for index {}",
                 attr.attribute_name_index
             ),
         }
@@ -205,16 +208,14 @@ fn inner_classes() {
 // test for enclosing method attribute, which only applies to local and anonymous classes
 fn enclosing_method() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses$2.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
 
     for attr in &class.attributes {
-        match lookup_string(&class, attr.attribute_name_index) {
-            Some(x) if x == "EnclosingMethod" => {
+        match &attr.info_parsed {
+            Some(AttributeInfoVariant::EnclosingMethod(enclosing)) => {
                 assert_eq!(attr.attribute_length, 4);
 
-                let (_, inner_class_attrs) = enclosing_method_attribute_parser(&attr.info).unwrap();
-
-                match &class.const_pool[(inner_class_attrs.class_index - 1) as usize] {
+                match &class.const_pool[(enclosing.class_index - 1) as usize] {
                     classfile_parser::constant_info::ConstantInfo::Class(class_constant) => {
                         let _expected = String::from("InnerClasses");
                         assert_matches!(
@@ -228,7 +229,7 @@ fn enclosing_method() {
                     _ => panic!("Expected Class constant"),
                 }
 
-                match &class.const_pool[(inner_class_attrs.method_index - 1) as usize] {
+                match &class.const_pool[(enclosing.method_index - 1) as usize] {
                     classfile_parser::constant_info::ConstantInfo::NameAndType(
                         name_and_type_constant,
                     ) => {
@@ -239,7 +240,9 @@ fn enclosing_method() {
                                 utf8_string: _expected,
                             })
                         );
-                        dbg!(&class.const_pool[(name_and_type_constant.name_index - 1) as usize]);
+                        dbg!(
+                            &class.const_pool[(name_and_type_constant.name_index - 1) as usize]
+                        );
 
                         _expected = String::from("()V");
                         assert_matches!(
@@ -262,7 +265,7 @@ fn enclosing_method() {
             }
             Some(_) => {}
             None => panic!(
-                "Could not find attribute name for index {}",
+                "Could not parse attribute for index {}",
                 attr.attribute_name_index
             ),
         }
@@ -272,20 +275,16 @@ fn enclosing_method() {
 #[test]
 fn synthetic_attribute() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/InnerClasses$2.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let synthetic_attrs = class
         .attributes
         .iter()
-        .filter(
-            |attribute_info| match lookup_string(&class, attribute_info.attribute_name_index) {
-                Some(s) if s == "Synethic" => true,
-                Some(_) => false,
-                None => panic!(
-                    "Could not find attribute name for index {}",
-                    attribute_info.attribute_name_index
-                ),
-            },
-        )
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::Synthetic(_))
+            )
+        })
         .collect::<Vec<_>>();
 
     for attr in &synthetic_attrs {
@@ -297,30 +296,26 @@ fn synthetic_attribute() {
 #[test]
 fn signature_attribute() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/BootstrapMethods.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let signature_attrs = class
         .methods
         .iter()
         .flat_map(|method_info| &method_info.attributes)
-        .filter(
-            |attribute_info| match lookup_string(&class, attribute_info.attribute_name_index) {
-                Some(s) if s == "Signature" => {
-                    eprintln!("Got a signature attr!");
-                    true
-                }
-                Some(_) => false,
-                None => panic!(
-                    "Could not find attribute name for index {}",
-                    attribute_info.attribute_name_index
-                ),
-            },
-        )
+        .filter(|attribute_info| {
+            if let Some(AttributeInfoVariant::Signature(_)) = &attribute_info.info_parsed {
+                eprintln!("Got a signature attr!");
+                true
+            } else {
+                false
+            }
+        })
         .collect::<Vec<_>>();
 
     for attr in &signature_attrs {
-        let (_, signature_attr) = signature_attribute_parser(&attr.info).unwrap();
-        let signature_string = lookup_string(&class, signature_attr.signature_index).unwrap();
-        dbg!(signature_string);
+        if let Some(AttributeInfoVariant::Signature(sig)) = &attr.info_parsed {
+            let signature_string = lookup_string(&class, sig.signature_index).unwrap();
+            dbg!(signature_string);
+        }
     }
 
     //uncomment to see dbg output from above
@@ -331,40 +326,34 @@ fn signature_attribute() {
 fn local_variable_table() {
     // The class was not compiled with "javac -g"
     let class_bytes = include_bytes!("../java-assets/compiled-classes/LocalVariableTable.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
-    let method_info = &class.methods.iter().last().unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
+    let method_info = class.methods.iter().last().unwrap();
 
     let code_attribute = method_info
         .attributes
         .iter()
         .find_map(|attribute_info| {
-            match lookup_string(&class, attribute_info.attribute_name_index)?.as_str() {
-                "Code" => {
-                    classfile_parser::attribute_info::code_attribute_parser(&attribute_info.info)
-                        .ok()
-                }
-                _ => None,
+            if let Some(AttributeInfoVariant::Code(code)) = &attribute_info.info_parsed {
+                Some(code)
+            } else {
+                None
             }
         })
-        .map(|i| i.1)
-        .unwrap();
+        .expect("Should have found a Code attribute");
 
+    // Code attribute's sub-attributes do NOT have info_parsed populated, so we parse manually
     let local_variable_table_attribute: LocalVariableTableAttribute = code_attribute
         .attributes
         .iter()
         .find_map(|attribute_info| {
             match lookup_string(&class, attribute_info.attribute_name_index)?.as_str() {
                 "LocalVariableTable" => {
-                    classfile_parser::code_attribute::local_variable_table_parser(
-                        &attribute_info.info,
-                    )
-                    .ok()
+                    LocalVariableTableAttribute::read(&mut Cursor::new(&attribute_info.info)).ok()
                 }
                 _ => None,
             }
         })
-        .map(|a| a.1)
-        .unwrap();
+        .expect("Should have found a LocalVariableTable attribute");
 
     let types: Vec<String> = local_variable_table_attribute
         .items
@@ -386,52 +375,41 @@ fn local_variable_table() {
 #[test]
 fn runtime_visible_annotations() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let runtime_visible_annotations_attribute = class
         .methods
         .iter()
         .flat_map(|m| &m.attributes)
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeVisibleAnnotations"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::RuntimeVisibleAnnotations(_))
+            )
+        })
         .collect::<Vec<_>>();
 
     assert_eq!(runtime_visible_annotations_attribute.len(), 1);
     let f = runtime_visible_annotations_attribute.first().unwrap();
 
-    let visible_annotations = runtime_visible_annotations_attribute_parser(&f.info);
-    let inner = &visible_annotations.unwrap();
-    assert!(&inner.0.is_empty());
-
-    /*
-    let should_be = RuntimeVisibleTypeAnnotationsAttribute {
-        num_annotations: 1,
-        annotations: vec![RuntimeAnnotation {
-            type_index: 30,
-            num_element_value_pairs: 1,
-            element_value_pairs: vec![ElementValuePair {
-                element_name_index: 31,
-                value: ElementValue::ConstValueIndex {
-                    tag: 's',
-                    value: 32,
-                },
-            }],
-        }],
+    let inner = match &f.info_parsed {
+        Some(AttributeInfoVariant::RuntimeVisibleAnnotations(rva)) => rva,
+        _ => panic!("Expected RuntimeVisibleAnnotations"),
     };
-    */
 
-    assert_eq!(inner.1.num_annotations, 1);
-    assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 46);
-    assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
-    assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
+    assert_eq!(inner.num_annotations, 1);
+    assert_eq!(inner.annotations.len(), 1);
+    assert_eq!(inner.annotations[0].type_index, 46);
+    assert_eq!(inner.annotations[0].num_element_value_pairs, 1);
+    assert_eq!(inner.annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
-        inner.1.annotations[0].element_value_pairs[0].element_name_index,
+        inner.annotations[0].element_value_pairs[0].element_name_index,
         37
     );
 
-    match inner.1.annotations[0].element_value_pairs[0].value {
-        ElementValue::ConstValueIndex { tag, value } => {
-            assert_eq!(tag, 's');
-            assert_eq!(value, 47);
+    match &inner.annotations[0].element_value_pairs[0].value {
+        ElementValue::ConstValueIndex(cv) => {
+            assert_eq!(cv.tag, 's');
+            assert_eq!(cv.value, 47);
         }
         _ => panic!("Expected ConstValueIndex"),
     }
@@ -440,52 +418,41 @@ fn runtime_visible_annotations() {
 #[test]
 fn runtime_invisible_annotations() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let runtime_invisible_annotations_attribute = class
         .methods
         .iter()
         .flat_map(|m| &m.attributes)
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeInvisibleAnnotations"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::RuntimeInvisibleAnnotations(_))
+            )
+        })
         .collect::<Vec<_>>();
 
     assert_eq!(runtime_invisible_annotations_attribute.len(), 1);
     let f = runtime_invisible_annotations_attribute.first().unwrap();
 
-    let invisible_annotations = runtime_invisible_annotations_attribute_parser(&f.info);
-    let inner = &invisible_annotations.unwrap();
-    assert!(&inner.0.is_empty());
-
-    /*
-    let should_be = RuntimeVisibleTypeAnnotationsAttribute {
-        num_annotations: 1,
-        annotations: vec![RuntimeAnnotation {
-            type_index: 30,
-            num_element_value_pairs: 1,
-            element_value_pairs: vec![ElementValuePair {
-                element_name_index: 31,
-                value: ElementValue::ConstValueIndex {
-                    tag: 's',
-                    value: 32,
-                },
-            }],
-        }],
+    let inner = match &f.info_parsed {
+        Some(AttributeInfoVariant::RuntimeInvisibleAnnotations(ria)) => ria,
+        _ => panic!("Expected RuntimeInvisibleAnnotations"),
     };
-    */
 
-    assert_eq!(inner.1.num_annotations, 1);
-    assert_eq!(inner.1.annotations.len(), 1);
-    assert_eq!(inner.1.annotations[0].type_index, 49);
-    assert_eq!(inner.1.annotations[0].num_element_value_pairs, 1);
-    assert_eq!(inner.1.annotations[0].element_value_pairs.len(), 1);
+    assert_eq!(inner.num_annotations, 1);
+    assert_eq!(inner.annotations.len(), 1);
+    assert_eq!(inner.annotations[0].type_index, 49);
+    assert_eq!(inner.annotations[0].num_element_value_pairs, 1);
+    assert_eq!(inner.annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
-        inner.1.annotations[0].element_value_pairs[0].element_name_index,
+        inner.annotations[0].element_value_pairs[0].element_name_index,
         37
     );
 
-    match inner.1.annotations[0].element_value_pairs[0].value {
-        ElementValue::ConstValueIndex { tag, value } => {
-            assert_eq!(tag, 's');
-            assert_eq!(value, 50);
+    match &inner.annotations[0].element_value_pairs[0].value {
+        ElementValue::ConstValueIndex(cv) => {
+            assert_eq!(cv.tag, 's');
+            assert_eq!(cv.value, 50);
         }
         _ => panic!("Expected ConstValueIndex"),
     }
@@ -494,34 +461,40 @@ fn runtime_invisible_annotations() {
 #[test]
 fn runtime_visible_parameter_annotations() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let runtime_visible_annotations_attribute = class
         .methods
         .iter()
         .flat_map(|m| &m.attributes)
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeVisibleParameterAnnotations"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::RuntimeVisibleParameterAnnotations(_))
+            )
+        })
         .collect::<Vec<_>>();
 
     assert_eq!(runtime_visible_annotations_attribute.len(), 1);
     let f = runtime_visible_annotations_attribute.first().unwrap();
 
-    let visible_annotations = runtime_visible_parameter_annotations_attribute_parser(&f.info);
-    let inner = &visible_annotations.unwrap();
-    assert!(&inner.0.is_empty());
+    let inner = match &f.info_parsed {
+        Some(AttributeInfoVariant::RuntimeVisibleParameterAnnotations(rvpa)) => rvpa,
+        _ => panic!("Expected RuntimeVisibleParameterAnnotations"),
+    };
 
-    assert_eq!(inner.1.num_parameters, 2);
-    assert_eq!(inner.1.parameter_annotations.len(), 2);
-    assert_eq!(inner.1.parameter_annotations[0].num_annotations, 1);
-    assert_eq!(inner.1.parameter_annotations[0].annotations.len(), 1);
+    assert_eq!(inner.num_parameters, 2);
+    assert_eq!(inner.parameter_annotations.len(), 2);
+    assert_eq!(inner.parameter_annotations[0].num_annotations, 1);
+    assert_eq!(inner.parameter_annotations[0].annotations.len(), 1);
 
-    match inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value {
-        ElementValue::ConstValueIndex { tag, value } => {
-            assert_eq!(tag, 's');
-            assert_eq!(value, 53);
+    match &inner.parameter_annotations[0].annotations[0].element_value_pairs[0].value {
+        ElementValue::ConstValueIndex(cv) => {
+            assert_eq!(cv.tag, 's');
+            assert_eq!(cv.value, 53);
         }
         _ => panic!(
             "expected ConstValueIndex, got {:?}",
-            inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value
+            inner.parameter_annotations[0].annotations[0].element_value_pairs[0].value
         ),
     }
 }
@@ -529,34 +502,40 @@ fn runtime_visible_parameter_annotations() {
 #[test]
 fn runtime_invisible_parameter_annotations() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let runtime_invisible_annotations_attribute = class
         .methods
         .iter()
         .flat_map(|m| &m.attributes)
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeInvisibleParameterAnnotations"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::RuntimeInvisibleParameterAnnotations(_))
+            )
+        })
         .collect::<Vec<_>>();
 
     assert_eq!(runtime_invisible_annotations_attribute.len(), 1);
     let f = runtime_invisible_annotations_attribute.first().unwrap();
 
-    let invisible_annotations = runtime_invisible_parameter_annotations_attribute_parser(&f.info);
-    let inner = &invisible_annotations.unwrap();
-    assert!(&inner.0.is_empty());
+    let inner = match &f.info_parsed {
+        Some(AttributeInfoVariant::RuntimeInvisibleParameterAnnotations(ripa)) => ripa,
+        _ => panic!("Expected RuntimeInvisibleParameterAnnotations"),
+    };
 
-    assert_eq!(inner.1.num_parameters, 2);
-    assert_eq!(inner.1.parameter_annotations.len(), 2);
-    assert_eq!(inner.1.parameter_annotations[1].num_annotations, 1);
-    assert_eq!(inner.1.parameter_annotations[1].annotations.len(), 1);
+    assert_eq!(inner.num_parameters, 2);
+    assert_eq!(inner.parameter_annotations.len(), 2);
+    assert_eq!(inner.parameter_annotations[1].num_annotations, 1);
+    assert_eq!(inner.parameter_annotations[1].annotations.len(), 1);
 
-    match inner.1.parameter_annotations[1].annotations[0].element_value_pairs[0].value {
-        ElementValue::ConstValueIndex { tag, value } => {
-            assert_eq!(tag, 's');
-            assert_eq!(value, 50);
+    match &inner.parameter_annotations[1].annotations[0].element_value_pairs[0].value {
+        ElementValue::ConstValueIndex(cv) => {
+            assert_eq!(cv.tag, 's');
+            assert_eq!(cv.value, 50);
         }
         _ => panic!(
             "expected ConstValueIndex, got {:?}",
-            inner.1.parameter_annotations[0].annotations[0].element_value_pairs[0].value
+            inner.parameter_annotations[0].annotations[0].element_value_pairs[0].value
         ),
     }
 }
@@ -564,104 +543,127 @@ fn runtime_invisible_parameter_annotations() {
 #[test]
 fn runtime_visible_type_annotations() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let runtime_visible_type_annotations_attribute = class
         .fields
         .iter()
         .flat_map(|f| &f.attributes)
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeVisibleTypeAnnotations"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::RuntimeVisibleTypeAnnotations(_))
+            )
+        })
         .collect::<Vec<_>>();
 
     assert_eq!(runtime_visible_type_annotations_attribute.len(), 1);
     let f = runtime_visible_type_annotations_attribute.first().unwrap();
 
-    let visible_annotations = runtime_visible_type_annotations_attribute_parser(&f.info);
-    let inner = &visible_annotations.unwrap();
-    assert_eq!(inner.1.num_annotations, 1);
-    assert_eq!(inner.1.type_annotations.len(), 1);
-    assert_eq!(inner.1.type_annotations[0].target_type, 19);
-    assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
-    assert_eq!(inner.1.type_annotations[0].target_path.path_length, 0);
-    assert_eq!(inner.1.type_annotations[0].target_path.paths.len(), 0);
-    assert_eq!(inner.1.type_annotations[0].type_index, 36);
-    assert_eq!(inner.1.type_annotations[0].num_element_value_pairs, 1);
-    assert_eq!(inner.1.type_annotations[0].element_value_pairs.len(), 1);
+    let inner = match &f.info_parsed {
+        Some(AttributeInfoVariant::RuntimeVisibleTypeAnnotations(rvta)) => rvta,
+        _ => panic!("Expected RuntimeVisibleTypeAnnotations"),
+    };
+
+    assert_eq!(inner.num_annotations, 1);
+    assert_eq!(inner.type_annotations.len(), 1);
+    assert_eq!(inner.type_annotations[0].target_type, 19);
+    assert_matches!(inner.type_annotations[0].target_info, TargetInfo::Empty);
+    assert_eq!(inner.type_annotations[0].target_path.path_length, 0);
+    assert_eq!(inner.type_annotations[0].target_path.paths.len(), 0);
+    assert_eq!(inner.type_annotations[0].type_index, 36);
+    assert_eq!(inner.type_annotations[0].num_element_value_pairs, 1);
+    assert_eq!(inner.type_annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
-        inner.1.type_annotations[0].element_value_pairs[0].element_name_index,
+        inner.type_annotations[0].element_value_pairs[0].element_name_index,
         37
     );
-    assert_matches!(
-        inner.1.type_annotations[0].element_value_pairs[0].value,
-        ElementValue::ConstValueIndex {
-            tag: 's',
-            value: 38
+    match &inner.type_annotations[0].element_value_pairs[0].value {
+        ElementValue::ConstValueIndex(cv) => {
+            assert_eq!(cv.tag, 's');
+            assert_eq!(cv.value, 38);
         }
-    );
+        _ => panic!("Expected ConstValueIndex"),
+    }
 }
 
 #[test]
 fn runtime_invisible_type_annotations() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/Annotations.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let runtime_invisible_type_annotations_attribute = class
         .fields
         .iter()
         .flat_map(|f| &f.attributes)
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "RuntimeInvisibleTypeAnnotations"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::RuntimeInvisibleTypeAnnotations(_))
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(runtime_invisible_type_annotations_attribute.len(), 1);
     let f = runtime_invisible_type_annotations_attribute
         .first()
         .unwrap();
 
-    let invisible_annotations = runtime_visible_type_annotations_attribute_parser(&f.info);
-    let inner = &invisible_annotations.unwrap();
-    assert_eq!(inner.1.num_annotations, 1);
-    assert_eq!(inner.1.type_annotations.len(), 1);
-    assert_eq!(inner.1.type_annotations[0].target_type, 19);
-    assert_matches!(inner.1.type_annotations[0].target_info, TargetInfo::Empty);
-    assert_eq!(inner.1.type_annotations[0].target_path.path_length, 0);
-    assert_eq!(inner.1.type_annotations[0].target_path.paths.len(), 0);
-    assert_eq!(inner.1.type_annotations[0].type_index, 41);
-    assert_eq!(inner.1.type_annotations[0].num_element_value_pairs, 1);
-    assert_eq!(inner.1.type_annotations[0].element_value_pairs.len(), 1);
+    let inner = match &f.info_parsed {
+        Some(AttributeInfoVariant::RuntimeInvisibleTypeAnnotations(rita)) => rita,
+        _ => panic!("Expected RuntimeInvisibleTypeAnnotations"),
+    };
+
+    assert_eq!(inner.num_annotations, 1);
+    assert_eq!(inner.type_annotations.len(), 1);
+    assert_eq!(inner.type_annotations[0].target_type, 19);
+    assert_matches!(inner.type_annotations[0].target_info, TargetInfo::Empty);
+    assert_eq!(inner.type_annotations[0].target_path.path_length, 0);
+    assert_eq!(inner.type_annotations[0].target_path.paths.len(), 0);
+    assert_eq!(inner.type_annotations[0].type_index, 41);
+    assert_eq!(inner.type_annotations[0].num_element_value_pairs, 1);
+    assert_eq!(inner.type_annotations[0].element_value_pairs.len(), 1);
     assert_eq!(
-        inner.1.type_annotations[0].element_value_pairs[0].element_name_index,
+        inner.type_annotations[0].element_value_pairs[0].element_name_index,
         37
     );
-    assert_matches!(
-        inner.1.type_annotations[0].element_value_pairs[0].value,
-        ElementValue::ConstValueIndex {
-            tag: 's',
-            value: 42
+    match &inner.type_annotations[0].element_value_pairs[0].value {
+        ElementValue::ConstValueIndex(cv) => {
+            assert_eq!(cv.tag, 's');
+            assert_eq!(cv.value, 42);
         }
-    );
+        _ => panic!("Expected ConstValueIndex"),
+    }
 }
 
 #[test]
 fn default_annotation_value() {
     let class_bytes =
         include_bytes!("../java-assets/compiled-classes/Annotations$VisibleAtRuntime.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let default_annotation_attributes = class
         .methods
         .iter()
         .flat_map(|m| &m.attributes)
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "AnnotationDefault"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::AnnotationDefault(_))
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(default_annotation_attributes.len(), 1);
     let f = default_annotation_attributes.first().unwrap();
 
-    let default_annotation = element_value_parser(&f.info);
-    let inner: AnnotationDefaultAttribute =
-        default_annotation.unwrap().1 as AnnotationDefaultAttribute;
-    assert_matches!(
-        inner,
-        ElementValue::ConstValueIndex {
-            tag: 's',
-            value: 10
+    let inner = match &f.info_parsed {
+        Some(AttributeInfoVariant::AnnotationDefault(ad)) => ad,
+        _ => panic!("Expected AnnotationDefault"),
+    };
+
+    match inner {
+        ElementValue::ConstValueIndex(cv) => {
+            assert_eq!(cv.tag, 's');
+            assert_eq!(cv.value, 10);
         }
-    );
+        _ => panic!("Expected ConstValueIndex"),
+    }
 }
 
 // SourceDebugExtension attributes appear to be custom/non-standard. While it would
@@ -670,44 +672,39 @@ fn default_annotation_value() {
 // Virtual Machine", so I will leave this test to be better developed when example
 // use cases are found.
 // #[test]
+#[allow(dead_code)]
 fn source_debug_extension() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/BasicClass.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
     let source_debug_extension_attribute = class
         .attributes
         .iter()
-        .filter(|attribute_info| matches!(lookup_string(&class, attribute_info.attribute_name_index), Some(s) if s == "SourceDebugExtension"))
+        .filter(|attribute_info| {
+            matches!(
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::SourceDebugExtension(_))
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(source_debug_extension_attribute.len(), 1);
-    let f = source_debug_extension_attribute.first().unwrap();
-
-    let default_annotation = source_debug_extension_parser(&f.info);
-    let inner = &default_annotation.unwrap();
-    dbg!(inner);
 }
 
 #[test]
 fn source_file() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/BasicClass.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
 
     let source = class
         .attributes
         .iter()
         .find_map(|attribute_info| {
-            match lookup_string(&class, attribute_info.attribute_name_index)?.as_str() {
-                "SourceFile" => classfile_parser::attribute_info::sourcefile_attribute_parser(
-                    &attribute_info.info,
-                )
-                .ok(),
-                o => {
-                    dbg!(o);
-                    None
-                }
+            if let Some(AttributeInfoVariant::SourceFile(sf)) = &attribute_info.info_parsed {
+                Some(sf)
+            } else {
+                None
             }
         })
-        .map(|i| i.1)
-        .unwrap();
+        .expect("Should have found a SourceFile attribute");
 
     let s = lookup_string(&class, source.sourcefile_index).unwrap();
 
@@ -717,26 +714,36 @@ fn source_file() {
 #[test]
 fn line_number_table() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/Instructions.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
-    let default_annotation_attributes = class
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
+    let static_method = class
         .methods
         .iter()
         .find(|m| m.access_flags.contains(MethodAccessFlags::STATIC))
         .unwrap();
 
-    let (_, code_attribute) =
-        code_attribute_parser(&default_annotation_attributes.attributes[0].info).unwrap();
+    let code_attribute = static_method
+        .attributes
+        .iter()
+        .find_map(|attr| {
+            if let Some(AttributeInfoVariant::Code(code)) = &attr.info_parsed {
+                Some(code)
+            } else {
+                None
+            }
+        })
+        .expect("Should have found a Code attribute");
 
     assert_eq!(
         code_attribute.attributes.len(),
         code_attribute.attributes_count as usize
     );
 
+    // Code attribute's sub-attributes do NOT have info_parsed populated, so we parse manually
     let line_number_tables = &code_attribute
         .attributes
         .iter()
         .filter(|a| lookup_string(&class, a.attribute_name_index).unwrap() == "LineNumberTable")
-        .map(|a| line_number_table_attribute_parser(&a.info).unwrap().1)
+        .map(|a| LineNumberTableAttribute::read(&mut Cursor::new(&a.info)).unwrap())
         .collect::<Vec<_>>();
 
     assert_eq!(line_number_tables.len(), 1);
@@ -750,32 +757,35 @@ fn line_number_table() {
 fn local_variable_type_table() {
     // The class was not compiled with "javac -g"
     let class_bytes = include_bytes!("../java-assets/compiled-classes/LocalVariableTable.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
-    let method_info = &class.methods.iter().last().unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
+    let method_info = class.methods.iter().last().unwrap();
 
-    let local_variable_table_type_attribute = method_info
+    let code_attribute = method_info
         .attributes
         .iter()
         .find_map(|attribute_info| {
-            match lookup_string(&class, attribute_info.attribute_name_index)?.as_str() {
-                "Code" => code_attribute_parser(&attribute_info.info).ok(),
-                _ => None,
+            if let Some(AttributeInfoVariant::Code(code)) = &attribute_info.info_parsed {
+                Some(code)
+            } else {
+                None
             }
         })
-        .map(|i| i.1)
-        .unwrap()
+        .expect("Should have found a Code attribute");
+
+    // Code attribute's sub-attributes do NOT have info_parsed populated, so we parse manually
+    let local_variable_table_type_attribute = code_attribute
         .attributes
         .iter()
         .find_map(|attribute_info| {
             match lookup_string(&class, attribute_info.attribute_name_index)?.as_str() {
                 "LocalVariableTypeTable" => {
-                    local_variable_type_table_parser(&attribute_info.info).ok()
+                    LocalVariableTypeTableAttribute::read(&mut Cursor::new(&attribute_info.info))
+                        .ok()
                 }
                 _ => None,
             }
         })
-        .map(|a| a.1)
-        .unwrap();
+        .expect("Should have found a LocalVariableTypeTable attribute");
 
     let types: Vec<String> = local_variable_table_type_attribute
         .local_variable_type_table
@@ -793,17 +803,15 @@ fn local_variable_type_table() {
 #[test]
 fn deprecated() {
     let class_bytes = include_bytes!("../java-assets/compiled-classes/DeprecatedAnnotation.class");
-    let (_, class) = class_parser(class_bytes).unwrap();
+    let class = ClassFile::read(&mut Cursor::new(class_bytes.as_slice())).unwrap();
 
     let deprecated_class_attribute = &class
         .attributes
         .iter()
         .filter(|attribute_info| {
             matches!(
-                lookup_string(&class, attribute_info.attribute_name_index)
-                    .unwrap()
-                    .as_str(),
-                "Deprecated"
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::Deprecated(_))
             )
         })
         .collect::<Vec<_>>();
@@ -816,10 +824,8 @@ fn deprecated() {
         .flat_map(|m| &m.attributes)
         .filter(|attribute_info| {
             matches!(
-                lookup_string(&class, attribute_info.attribute_name_index)
-                    .unwrap()
-                    .as_str(),
-                "Deprecated"
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::Deprecated(_))
             )
         })
         .collect::<Vec<_>>();
@@ -832,14 +838,11 @@ fn deprecated() {
         .flat_map(|f| &f.attributes)
         .filter(|attribute_info| {
             matches!(
-                lookup_string(&class, attribute_info.attribute_name_index)
-                    .unwrap()
-                    .as_str(),
-                "Deprecated"
+                &attribute_info.info_parsed,
+                Some(AttributeInfoVariant::Deprecated(_))
             )
         })
         .collect::<Vec<_>>();
 
     assert_eq!(deprecated_field_attribute.len(), 1);
 }
-*/

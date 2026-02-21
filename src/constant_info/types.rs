@@ -4,40 +4,46 @@ use std::fmt::Debug;
 #[derive(Clone, Debug)]
 #[binrw]
 pub enum ConstantInfo {
-    #[br(magic(1u8))]
+    #[brw(magic(1u8))]
     Utf8(Utf8Constant),
-    #[br(magic(3u8))]
+    #[brw(magic(3u8))]
     Integer(IntegerConstant),
-    #[br(magic(4u8))]
+    #[brw(magic(4u8))]
     Float(FloatConstant),
-    #[br(magic(5u8))]
+    #[brw(magic(5u8))]
     Long(LongConstant),
-    #[br(magic(6u8))]
+    #[brw(magic(6u8))]
     Double(DoubleConstant),
-    #[br(magic(7u8))]
+    #[brw(magic(7u8))]
     Class(ClassConstant),
-    #[br(magic(8u8))]
+    #[brw(magic(8u8))]
     String(StringConstant),
-    #[br(magic(9u8))]
+    #[brw(magic(9u8))]
     FieldRef(FieldRefConstant),
-    #[br(magic(10u8))]
+    #[brw(magic(10u8))]
     MethodRef(MethodRefConstant),
-    #[br(magic(11u8))]
+    #[brw(magic(11u8))]
     InterfaceMethodRef(InterfaceMethodRefConstant),
-    #[br(magic(12u8))]
+    #[brw(magic(12u8))]
     NameAndType(NameAndTypeConstant),
-    #[br(magic(15u8))]
+    #[brw(magic(15u8))]
     MethodHandle(MethodHandleConstant),
-    #[br(magic(16u8))]
+    #[brw(magic(16u8))]
     MethodType(MethodTypeConstant),
-    #[br(magic(18u8))]
+    #[brw(magic(18u8))]
     InvokeDynamic(InvokeDynamicConstant),
+    #[brw(magic(19u8))]
+    Module(ModuleConstant),
+    #[brw(magic(20u8))]
+    Package(PackageConstant),
     Unusable,
 }
 
 #[binrw::parser(reader)]
 pub fn string_reader() -> BinResult<String> {
-    let len = u16::from_be_bytes(reader.read_array()?);
+    let mut buf = [0u8; 2];
+    reader.read_exact(&mut buf)?;
+    let len = u16::from_be_bytes(buf);
     let mut string_bytes = vec![0; len as usize];
     let _ = reader.read_exact(&mut string_bytes);
     let utf8_string = cesu8::from_java_cesu8(&string_bytes)
@@ -47,8 +53,9 @@ pub fn string_reader() -> BinResult<String> {
 
 #[binrw::writer(writer)]
 pub fn string_writer<'a>(s: &'a String) -> BinResult<()> {
-    let _ = writer.write(&u16::to_be_bytes(s.len() as u16));
-    writer.write_all(s.as_bytes())?;
+    let cesu8_bytes = cesu8::to_java_cesu8(s);
+    writer.write_all(&u16::to_be_bytes(cesu8_bytes.len() as u16))?;
+    writer.write_all(&cesu8_bytes)?;
     Ok(())
 }
 
@@ -143,4 +150,16 @@ pub struct MethodTypeConstant {
 pub struct InvokeDynamicConstant {
     pub bootstrap_method_attr_index: u16,
     pub name_and_type_index: u16,
+}
+
+#[derive(Clone, Debug)]
+#[binrw]
+pub struct ModuleConstant {
+    pub name_index: u16,
+}
+
+#[derive(Clone, Debug)]
+#[binrw]
+pub struct PackageConstant {
+    pub name_index: u16,
 }
