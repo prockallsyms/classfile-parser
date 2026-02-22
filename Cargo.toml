@@ -12,9 +12,10 @@ license = "MIT"
 exclude = ["java-assets/out/**/*"]
 
 [features]
+decompile = []
 jar-utils = ["dep:zip"]
 spring-utils = ["jar-utils"]
-tui-example = ["jar-utils", "spring-utils", "dep:ratatui", "dep:crossterm", "dep:tui-textarea"]
+tui-example = ["jar-utils", "spring-utils", "decompile", "dep:ratatui", "dep:crossterm", "dep:tui-textarea"]
 
 [dependencies]
 bitflags = "^2.3"

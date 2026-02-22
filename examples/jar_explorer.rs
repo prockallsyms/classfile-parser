@@ -397,6 +397,22 @@ fn format_class(jar: &JarFile, path: &str) -> Vec<String> {
         Err(e) => return vec![format!("Failed to parse class: {e}")],
     };
 
+    // Try decompilation first
+    match classfile_parser::decompile::decompile(&cf) {
+        Ok(source) => source.lines().map(|l| l.to_string()).collect(),
+        Err(e) => {
+            let mut lines = vec![
+                format!("// Decompilation failed: {e}"),
+                "// Falling back to bytecode view".to_string(),
+                String::new(),
+            ];
+            lines.extend(format_class_bytecode(&cf));
+            lines
+        }
+    }
+}
+
+fn format_class_bytecode(cf: &ClassFile) -> Vec<String> {
     let cp = &cf.const_pool;
     let mut lines = Vec::new();
 
