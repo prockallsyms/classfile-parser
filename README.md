@@ -20,6 +20,9 @@ classfile-parser = "~0.3"
 ### Optional features
 
 ```toml
+# Bytecode-to-Java source decompiler
+classfile-parser = { version = "~0.3", features = ["decompile"] }
+
 # JAR archive reading/writing
 classfile-parser = { version = "~0.3", features = ["jar-utils"] }
 
@@ -115,6 +118,47 @@ fn main() {
             println!("Main-Class: {main_class}");
         }
     }
+}
+```
+
+### Decompiling class files
+
+Requires the `decompile` feature. Converts parsed bytecode back to readable Java source.
+
+```rust
+use classfile_parser::ClassFile;
+use classfile_parser::decompile::{self, Decompiler, DecompileOptions, RenderConfig};
+use binrw::BinRead;
+use std::io::Cursor;
+
+fn main() {
+    let bytes = include_bytes!("../path/to/JavaClass.class");
+    let class = ClassFile::read(&mut Cursor::new(bytes))
+        .expect("Failed to parse class file");
+
+    // Quick one-liner with default options
+    let source = decompile::decompile(&class).expect("decompilation failed");
+    println!("{source}");
+
+    // Or configure the decompiler
+    let options = DecompileOptions {
+        render_config: RenderConfig {
+            indent: "  ".into(),
+            max_line_width: 100,
+            use_var: false,
+            include_synthetic: false,
+        },
+        include_synthetic: false,
+        ..Default::default()
+    };
+    let decompiler = Decompiler::new(options);
+    let source = decompiler.decompile(&class).expect("decompilation failed");
+    println!("{source}");
+
+    // Decompile a single method
+    let method_src = decompiler.decompile_method(&class, "main")
+        .expect("method decompilation failed");
+    println!("{method_src}");
 }
 ```
 
@@ -230,3 +274,13 @@ fn main() {
   - [x] Application class and resource enumeration
   - [x] Nested JAR access
   - [x] classpath.idx and layers.idx parsing
+- [x] Decompiler (optional `decompile` feature)
+  - [x] Control flow graph construction from bytecode
+  - [x] Stack simulation and expression tree recovery
+  - [x] Control flow structuring (if/else, while, for, switch, try-catch)
+  - [x] Type inference, generics, and annotation recovery
+  - [x] Java source rendering with import management
+  - [x] Record, sealed class, and enum support
+  - [x] Per-method error recovery with bytecode fallback
+  - [x] Inner class decompilation
+  - [x] Compiler desugaring (autoboxing, for-each, assert)
