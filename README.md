@@ -28,6 +28,9 @@ classfile-parser = { version = "~0.3", features = ["jar-utils"] }
 
 # Spring Boot fat JAR support (includes jar-utils)
 classfile-parser = { version = "~0.3", features = ["spring-utils"] }
+
+# Java-to-bytecode compiler for patching method bodies (includes decompile)
+classfile-parser = { version = "~0.3", features = ["compile"] }
 ```
 
 ## Usage
@@ -162,6 +165,66 @@ fn main() {
 }
 ```
 
+### Compiling and patching method bodies
+
+Requires the `compile` feature. Replaces method bodies in an existing class file with new Java source compiled directly to bytecode — no `javac` needed at runtime.
+
+The `patch_method!` macro is the easiest way to patch a method. It compiles the given Java method body, generates a valid StackMapTable, and replaces the named method in one call:
+
+```rust
+use classfile_parser::{patch_method, ClassFile};
+
+fn main() {
+    let bytes = std::fs::read("HelloWorld.class").unwrap();
+    let mut class_file = ClassFile::from_bytes(&bytes).unwrap();
+
+    patch_method!(class_file, "main", r#"{
+        System.out.println("patched!");
+    }"#).unwrap();
+
+    std::fs::write("HelloWorld.class", class_file.to_bytes().unwrap()).unwrap();
+}
+```
+
+Use `patch_methods!` to patch several methods at once:
+
+```rust
+use classfile_parser::{patch_methods, ClassFile};
+
+fn main() {
+    let bytes = std::fs::read("MyClass.class").unwrap();
+    let mut cf = ClassFile::from_bytes(&bytes).unwrap();
+
+    patch_methods!(cf, {
+        "main" => r#"{
+            int x = 42;
+            if (x > 10) {
+                System.out.println("big");
+            } else {
+                System.out.println("small");
+            }
+        }"#,
+        "helper" => r#"{ return 99; }"#,
+    }).unwrap();
+
+    std::fs::write("MyClass.class", cf.to_bytes().unwrap()).unwrap();
+}
+```
+
+Both macros generate a StackMapTable by default, so patched classes pass full JVM bytecode verification. Pass `no_verify` to skip generation if you'll run with `-noverify`:
+
+```rust
+patch_method!(class_file, "main", r#"{ return; }"#, no_verify).unwrap();
+```
+
+The compiler supports: local variables, arithmetic, if/else, while, for, break/continue, switch (tableswitch/lookupswitch), try-catch-finally, return, throw, method calls, field access, object creation, arrays, casts, instanceof, and ternary expressions.
+
+A full working example is at [`examples/compile_patch.rs`](examples/compile_patch.rs):
+
+```sh
+cargo run --example compile_patch --features compile
+```
+
 ### Spring Boot fat JARs
 
 Requires the `spring-utils` feature.
@@ -284,3 +347,11 @@ fn main() {
   - [x] Per-method error recovery with bytecode fallback
   - [x] Inner class decompilation
   - [x] Compiler desugaring (autoboxing, for-each, assert)
+- [x] Compiler (optional `compile` feature)
+  - [x] Java method body lexer, parser, and AST
+  - [x] Bytecode codegen (locals, arithmetic, comparisons, logical ops)
+  - [x] Control flow: if/else, while, for, break/continue, switch (tableswitch/lookupswitch)
+  - [x] Exception handling: try-catch-finally with exception table generation
+  - [x] Object creation, method calls, field access, arrays, casts, instanceof, ternary
+  - [x] StackMapTable generation for full JVM bytecode verification
+  - [x] Method body patching (`compile_method_body`, `patch_method!`, `patch_methods!`)

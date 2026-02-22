@@ -13,6 +13,7 @@ exclude = ["java-assets/out/**/*"]
 
 [features]
 decompile = []
+compile = ["decompile"]
 jar-utils = ["dep:zip"]
 spring-utils = ["jar-utils"]
 tui-example = ["jar-utils", "spring-utils", "decompile", "dep:ratatui", "dep:crossterm", "dep:tui-textarea"]
@@ -33,3 +34,7 @@ tempfile = "3"
 [[example]]
 name = "jar_explorer"
 required-features = ["tui-example"]
+
+[[example]]
+name = "compile_patch"
+required-features = ["compile"]

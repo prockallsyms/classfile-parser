@@ -2,7 +2,9 @@ use std::io::{Read, Seek};
 
 use crate::attribute_info::AttributeInfo;
 use crate::constant_info::{
-    ClassConstant, ConstantInfo, NameAndTypeConstant, StringConstant, Utf8Constant,
+    ClassConstant, ConstantInfo, DoubleConstant, FieldRefConstant, FloatConstant, IntegerConstant,
+    InterfaceMethodRefConstant, LongConstant, MethodRefConstant, NameAndTypeConstant,
+    StringConstant, Utf8Constant,
 };
 use crate::field_info::FieldInfo;
 use crate::method_info::MethodInfo;
@@ -340,6 +342,163 @@ impl ClassFile {
         nat_index
     }
 
+    /// Get or add a NameAndType constant, deduplicating.
+    pub fn get_or_add_name_and_type(&mut self, name: &str, descriptor: &str) -> u16 {
+        let name_index = self.get_or_add_utf8(name);
+        let descriptor_index = self.get_or_add_utf8(descriptor);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::NameAndType(nat) = entry {
+                if nat.name_index == name_index && nat.descriptor_index == descriptor_index {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::NameAndType(NameAndTypeConstant {
+                name_index,
+                descriptor_index,
+            }));
+        index
+    }
+
+    /// Get or add a MethodRef constant, deduplicating.
+    pub fn get_or_add_method_ref(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        descriptor: &str,
+    ) -> u16 {
+        let class_index = self.get_or_add_class(class_name);
+        let nat_index = self.get_or_add_name_and_type(method_name, descriptor);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::MethodRef(r) = entry {
+                if r.class_index == class_index && r.name_and_type_index == nat_index {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::MethodRef(MethodRefConstant {
+                class_index,
+                name_and_type_index: nat_index,
+            }));
+        index
+    }
+
+    /// Get or add a FieldRef constant, deduplicating.
+    pub fn get_or_add_field_ref(
+        &mut self,
+        class_name: &str,
+        field_name: &str,
+        descriptor: &str,
+    ) -> u16 {
+        let class_index = self.get_or_add_class(class_name);
+        let nat_index = self.get_or_add_name_and_type(field_name, descriptor);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::FieldRef(r) = entry {
+                if r.class_index == class_index && r.name_and_type_index == nat_index {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::FieldRef(FieldRefConstant {
+                class_index,
+                name_and_type_index: nat_index,
+            }));
+        index
+    }
+
+    /// Get or add an InterfaceMethodRef constant, deduplicating.
+    pub fn get_or_add_interface_method_ref(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        descriptor: &str,
+    ) -> u16 {
+        let class_index = self.get_or_add_class(class_name);
+        let nat_index = self.get_or_add_name_and_type(method_name, descriptor);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::InterfaceMethodRef(r) = entry {
+                if r.class_index == class_index && r.name_and_type_index == nat_index {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::InterfaceMethodRef(InterfaceMethodRefConstant {
+                class_index,
+                name_and_type_index: nat_index,
+            }));
+        index
+    }
+
+    /// Get or add an Integer constant, deduplicating.
+    pub fn get_or_add_integer(&mut self, value: i32) -> u16 {
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::Integer(c) = entry {
+                if c.value == value {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::Integer(IntegerConstant { value }));
+        index
+    }
+
+    /// Get or add a Float constant, deduplicating.
+    pub fn get_or_add_float(&mut self, value: f32) -> u16 {
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::Float(c) = entry {
+                if c.value.to_bits() == value.to_bits() {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::Float(FloatConstant { value }));
+        index
+    }
+
+    /// Get or add a Long constant, deduplicating. Adds Unusable sentinel.
+    pub fn get_or_add_long(&mut self, value: i64) -> u16 {
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::Long(c) = entry {
+                if c.value == value {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::Long(LongConstant { value }));
+        self.const_pool.push(ConstantInfo::Unusable);
+        index
+    }
+
+    /// Get or add a Double constant, deduplicating. Adds Unusable sentinel.
+    pub fn get_or_add_double(&mut self, value: f64) -> u16 {
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::Double(c) = entry {
+                if c.value.to_bits() == value.to_bits() {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::Double(DoubleConstant { value }));
+        self.const_pool.push(ConstantInfo::Unusable);
+        index
+    }
+
     /// Sync everything after a patching session: calls `sync_from_parsed()` on all
     /// attributes (methods, fields, class-level), then `sync_counts()`.
     pub fn sync_all(&mut self) -> BinResult<()> {
@@ -358,6 +517,31 @@ impl ClassFile {
         }
         self.sync_counts();
         Ok(())
+    }
+
+    /// Parse a `ClassFile` from raw `.class` bytes.
+    ///
+    /// ```no_run
+    /// let bytes = std::fs::read("HelloWorld.class").unwrap();
+    /// let class_file = classfile_parser::ClassFile::from_bytes(&bytes).unwrap();
+    /// ```
+    pub fn from_bytes(bytes: &[u8]) -> BinResult<Self> {
+        use std::io::Cursor;
+        Self::read(&mut Cursor::new(bytes))
+    }
+
+    /// Serialize this `ClassFile` back to `.class` bytes.
+    ///
+    /// ```no_run
+    /// # let class_file = classfile_parser::ClassFile::from_bytes(&[]).unwrap();
+    /// let bytes = class_file.to_bytes().unwrap();
+    /// std::fs::write("HelloWorld.class", bytes).unwrap();
+    /// ```
+    pub fn to_bytes(&self) -> BinResult<Vec<u8>> {
+        use std::io::Cursor;
+        let mut out = Cursor::new(Vec::new());
+        self.write(&mut out)?;
+        Ok(out.into_inner())
     }
 }
 

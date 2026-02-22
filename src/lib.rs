@@ -17,6 +17,9 @@ pub use types::*;
 #[cfg(feature = "decompile")]
 pub mod decompile;
 
+#[cfg(feature = "compile")]
+pub mod compile;
+
 #[cfg(feature = "jar-utils")]
 pub mod jar_utils;
 
