@@ -56,8 +56,11 @@ impl FrameTracker {
 
     /// Record a frame snapshot at the given bytecode offset.
     pub fn record_frame(&mut self, offset: u32, locals: Vec<VType>, stack: Vec<VType>) {
-        // Deduplicate: only keep the first snapshot per offset
-        if self.snapshots.iter().any(|s| s.bytecode_offset == offset) {
+        // If a frame already exists at this offset, replace it — the last binding
+        // at a given offset represents the most accurate state for subsequent code.
+        if let Some(existing) = self.snapshots.iter_mut().find(|s| s.bytecode_offset == offset) {
+            existing.locals = locals;
+            existing.stack = stack;
             return;
         }
         self.snapshots.push(FrameSnapshot {

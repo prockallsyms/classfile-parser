@@ -23,5 +23,8 @@ pub mod compile;
 #[cfg(feature = "jar-utils")]
 pub mod jar_utils;
 
+#[cfg(all(feature = "compile", feature = "jar-utils"))]
+pub mod jar_patch;
+
 #[cfg(feature = "spring-utils")]
 pub mod spring_utils;

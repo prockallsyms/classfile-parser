@@ -11,10 +11,14 @@ readme = "README.md"
 license = "MIT"
 exclude = ["java-assets/out/**/*"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 decompile = []
 compile = ["decompile"]
 jar-utils = ["dep:zip"]
+jar-patch = ["compile", "jar-utils"]
 spring-utils = ["jar-utils"]
 tui-example = ["jar-utils", "spring-utils", "decompile", "dep:ratatui", "dep:crossterm", "dep:tui-textarea"]
 
@@ -38,3 +42,7 @@ required-features = ["tui-example"]
 [[example]]
 name = "compile_patch"
 required-features = ["compile"]
+
+[[example]]
+name = "jar_patch"
+required-features = ["jar-patch"]

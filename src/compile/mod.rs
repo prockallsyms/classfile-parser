@@ -50,6 +50,8 @@ impl fmt::Display for CompileError {
     }
 }
 
+impl std::error::Error for CompileError {}
+
 pub struct CompileOptions {
     pub strip_stack_map_table: bool,
     pub generate_stack_map_table: bool,
@@ -58,8 +60,8 @@ pub struct CompileOptions {
 impl Default for CompileOptions {
     fn default() -> Self {
         CompileOptions {
-            strip_stack_map_table: true,
-            generate_stack_map_table: false,
+            strip_stack_map_table: false,
+            generate_stack_map_table: true,
         }
     }
 }

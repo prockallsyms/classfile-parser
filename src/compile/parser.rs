@@ -81,6 +81,7 @@ impl Parser {
             Token::While => self.parse_while(),
             Token::For => self.parse_for(),
             Token::Switch => self.parse_switch(),
+            Token::Synchronized => self.parse_synchronized(),
             Token::Try => self.parse_try_catch(),
             Token::Return => self.parse_return(),
             Token::Throw => self.parse_throw(),
@@ -93,6 +94,18 @@ impl Parser {
                 self.advance();
                 self.expect(&Token::Semicolon)?;
                 Ok(CStmt::Continue)
+            }
+            Token::Var => {
+                self.advance();
+                let name = self.expect_ident()?;
+                self.expect(&Token::Eq)?;
+                let init = self.parse_expression()?;
+                self.expect(&Token::Semicolon)?;
+                Ok(CStmt::LocalDecl {
+                    ty: TypeName::Class("__var__".into()),
+                    name,
+                    init: Some(init),
+                })
             }
             // Attempt type name for local declaration
             Token::KwInt
@@ -182,6 +195,29 @@ impl Parser {
     fn parse_for(&mut self) -> Result<CStmt, CompileError> {
         self.expect(&Token::For)?;
         self.expect(&Token::LParen)?;
+
+        // Try for-each: for (Type name : expr)
+        if self.is_type_start() {
+            let saved_pos = self.pos;
+            if let Ok(ty) = self.parse_type_name() {
+                if let Ok(name) = self.expect_ident() {
+                    if self.at(&Token::Colon) {
+                        self.advance(); // consume ':'
+                        let iterable = self.parse_expression()?;
+                        self.expect(&Token::RParen)?;
+                        let body = self.parse_block_or_single()?;
+                        return Ok(CStmt::ForEach {
+                            element_type: ty,
+                            var_name: name,
+                            iterable,
+                            body,
+                        });
+                    }
+                }
+            }
+            // Not a for-each, restore position and parse as traditional for
+            self.pos = saved_pos;
+        }
 
         // Init
         let init = if self.at(&Token::Semicolon) {
@@ -339,12 +375,16 @@ impl Parser {
         while self.at(&Token::Catch) {
             self.advance();
             self.expect(&Token::LParen)?;
-            let exception_type = self.parse_type_name()?;
+            let mut exception_types = vec![self.parse_type_name()?];
+            while self.at(&Token::Pipe) {
+                self.advance();
+                exception_types.push(self.parse_type_name()?);
+            }
             let var_name = self.expect_ident()?;
             self.expect(&Token::RParen)?;
             let body = self.parse_block_or_single()?;
             catches.push(CatchClause {
-                exception_type,
+                exception_types,
                 var_name,
                 body,
             });
@@ -364,6 +404,15 @@ impl Parser {
             catches,
             finally_body,
         })
+    }
+
+    fn parse_synchronized(&mut self) -> Result<CStmt, CompileError> {
+        self.expect(&Token::Synchronized)?;
+        self.expect(&Token::LParen)?;
+        let lock_expr = self.parse_expression()?;
+        self.expect(&Token::RParen)?;
+        let body = self.parse_block_or_single()?;
+        Ok(CStmt::Synchronized { lock_expr, body })
     }
 
     fn parse_local_decl(&mut self) -> Result<CStmt, CompileError> {
@@ -931,7 +980,15 @@ impl Parser {
             match self.peek() {
                 Token::Dot => {
                     self.advance();
+                    // Handle generic type parameters before method name: obj.<String>method()
+                    if self.at(&Token::Lt) {
+                        self.skip_type_parameters()?;
+                    }
                     let name = self.expect_ident()?;
+                    // Also handle generics after method name: obj.method<String>()
+                    if self.at(&Token::Lt) {
+                        self.skip_type_parameters()?;
+                    }
                     if self.at(&Token::LParen) {
                         // Method call
                         let args = self.parse_args()?;
@@ -964,6 +1021,24 @@ impl Parser {
                 Token::MinusMinus => {
                     self.advance();
                     expr = CExpr::PostDecrement(Box::new(expr));
+                }
+                Token::ColonColon => {
+                    // Method reference: expr::methodName
+                    self.advance();
+                    let method_name = self.expect_ident()?;
+                    // Extract class name from the expression
+                    let class_name = match &expr {
+                        CExpr::Ident(name) => name.clone(),
+                        _ => {
+                            return Err(
+                                self.error("method reference requires a class name"),
+                            )
+                        }
+                    };
+                    expr = CExpr::MethodRef {
+                        class_name,
+                        method_name,
+                    };
                 }
                 _ => break,
             }
@@ -1023,14 +1098,33 @@ impl Parser {
                 self.advance();
                 let ty = self.parse_type_name()?;
                 if self.at(&Token::LBracket) {
-                    // new Type[size]
+                    // new Type[size] or new Type[size1][size2]...
                     self.advance();
-                    let size = self.parse_expression()?;
+                    let first_size = self.parse_expression()?;
                     self.expect(&Token::RBracket)?;
-                    Ok(CExpr::NewArray {
-                        element_type: ty,
-                        size: Box::new(size),
-                    })
+
+                    // Check for multi-dimensional: new Type[expr][expr]...
+                    if self.at(&Token::LBracket)
+                        && self.tokens.get(self.pos + 1).is_some_and(|t| t.token != Token::RBracket)
+                    {
+                        let mut dimensions = vec![first_size];
+                        while self.at(&Token::LBracket)
+                            && self.tokens.get(self.pos + 1).is_some_and(|t| t.token != Token::RBracket)
+                        {
+                            self.advance(); // [
+                            dimensions.push(self.parse_expression()?);
+                            self.expect(&Token::RBracket)?;
+                        }
+                        Ok(CExpr::NewMultiArray {
+                            element_type: ty,
+                            dimensions,
+                        })
+                    } else {
+                        Ok(CExpr::NewArray {
+                            element_type: ty,
+                            size: Box::new(first_size),
+                        })
+                    }
                 } else if self.at(&Token::LParen) {
                     // new ClassName(args)
                     let class_name = match ty {
@@ -1047,7 +1141,15 @@ impl Parser {
                     Err(self.error("expected '(' or '[' after 'new Type'"))
                 }
             }
+            Token::Switch => {
+                self.advance();
+                self.parse_switch_expr()
+            }
             Token::LParen => {
+                // Check for lambda: () -> or (Type name, ...) ->
+                if self.is_lambda_start() {
+                    return self.parse_lambda();
+                }
                 self.advance();
                 let expr = self.parse_expression()?;
                 self.expect(&Token::RParen)?;
@@ -1070,6 +1172,164 @@ impl Parser {
             }
             _ => Err(self.error(format!("unexpected token: {:?}", self.peek()))),
         }
+    }
+
+    /// Skip generic type parameters `<Type, Type, ...>` in postfix position.
+    /// In postfix (after `.name`), `<` is unambiguous — it's always generics, not comparison.
+    fn skip_type_parameters(&mut self) -> Result<(), CompileError> {
+        self.expect(&Token::Lt)?;
+        let mut depth: i32 = 1;
+        while depth > 0 && !self.at(&Token::Eof) {
+            match self.peek() {
+                Token::Lt => {
+                    depth += 1;
+                    self.advance();
+                }
+                Token::Gt => {
+                    depth -= 1;
+                    self.advance();
+                }
+                Token::GtGt => {
+                    depth -= 2;
+                    self.advance();
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_switch_expr(&mut self) -> Result<CExpr, CompileError> {
+        self.expect(&Token::LParen)?;
+        let expr = self.parse_expression()?;
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::LBrace)?;
+
+        let mut cases = Vec::new();
+        let mut default_expr = None;
+
+        while !self.at(&Token::RBrace) && !self.at(&Token::Eof) {
+            if self.at(&Token::Default) {
+                self.advance();
+                self.expect(&Token::Arrow)?;
+                let e = self.parse_expression()?;
+                self.expect(&Token::Semicolon)?;
+                default_expr = Some(e);
+            } else {
+                self.expect(&Token::Case)?;
+                let mut values = Vec::new();
+                values.push(self.parse_case_value()?);
+                while self.at(&Token::Comma) {
+                    self.advance();
+                    values.push(self.parse_case_value()?);
+                }
+                self.expect(&Token::Arrow)?;
+                let case_expr = self.parse_expression()?;
+                self.expect(&Token::Semicolon)?;
+                cases.push(SwitchExprCase {
+                    values,
+                    expr: case_expr,
+                });
+            }
+        }
+        self.expect(&Token::RBrace)?;
+
+        let default = default_expr.ok_or_else(|| {
+            self.error("switch expression requires a default case")
+        })?;
+
+        Ok(CExpr::SwitchExpr {
+            expr: Box::new(expr),
+            cases,
+            default_expr: Box::new(default),
+        })
+    }
+
+    /// Lookahead to determine if `(` starts a lambda expression.
+    /// Patterns: `() ->`, `(Type name) ->`, `(Type name, Type name) ->`
+    fn is_lambda_start(&self) -> bool {
+        let mut i = self.pos + 1; // skip `(`
+
+        // () -> is a zero-arg lambda
+        if i < self.tokens.len() && self.tokens[i].token == Token::RParen {
+            return i + 1 < self.tokens.len() && self.tokens[i + 1].token == Token::Arrow;
+        }
+
+        // Scan for matching `)` then check for `->`
+        let mut depth = 1;
+        while i < self.tokens.len() && depth > 0 {
+            match &self.tokens[i].token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth -= 1,
+                Token::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        // After `)`, check for `->`
+        if depth == 0 && i < self.tokens.len() {
+            return self.tokens[i].token == Token::Arrow
+                // Fallback: also check i-1 was `)` and next is Arrow
+                || (i > 0 && self.tokens[i - 1].token == Token::RParen
+                    && i < self.tokens.len()
+                    && self.tokens[i].token == Token::Arrow);
+        }
+        false
+    }
+
+    fn parse_lambda(&mut self) -> Result<CExpr, CompileError> {
+        self.expect(&Token::LParen)?;
+        let mut params = Vec::new();
+
+        if !self.at(&Token::RParen) {
+            loop {
+                // Try to parse a typed parameter: Type name
+                // Or just an identifier (inferred type)
+                if self.is_type_start() {
+                    let saved = self.pos;
+                    if let Ok(ty) = self.parse_type_name() {
+                        if let Token::Ident(_) = self.peek() {
+                            let name = self.expect_ident()?;
+                            params.push(LambdaParam {
+                                ty: Some(ty),
+                                name,
+                            });
+                        } else {
+                            // Not Type name pattern, restore and try ident
+                            self.pos = saved;
+                            let name = self.expect_ident()?;
+                            params.push(LambdaParam { ty: None, name });
+                        }
+                    } else {
+                        self.pos = saved;
+                        let name = self.expect_ident()?;
+                        params.push(LambdaParam { ty: None, name });
+                    }
+                } else {
+                    let name = self.expect_ident()?;
+                    params.push(LambdaParam { ty: None, name });
+                }
+                if self.at(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::Arrow)?;
+
+        let body = if self.at(&Token::LBrace) {
+            let stmts = self.parse_block_or_single()?;
+            LambdaBody::Block(stmts)
+        } else {
+            let expr = self.parse_expression()?;
+            LambdaBody::Expr(Box::new(expr))
+        };
+
+        Ok(CExpr::Lambda { params, body })
     }
 
     fn parse_args(&mut self) -> Result<Vec<CExpr>, CompileError> {

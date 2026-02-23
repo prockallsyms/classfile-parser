@@ -52,6 +52,24 @@ pub enum UnaryOp {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct SwitchExprCase {
+    pub values: Vec<i64>,
+    pub expr: CExpr,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LambdaParam {
+    pub ty: Option<TypeName>,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LambdaBody {
+    Expr(Box<CExpr>),
+    Block(Vec<CStmt>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct SwitchCase {
     pub values: Vec<i64>,
     pub body: Vec<CStmt>,
@@ -59,7 +77,7 @@ pub struct SwitchCase {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CatchClause {
-    pub exception_type: TypeName,
+    pub exception_types: Vec<TypeName>,
     pub var_name: String,
     pub body: Vec<CStmt>,
 }
@@ -101,6 +119,16 @@ pub enum CStmt {
         try_body: Vec<CStmt>,
         catches: Vec<CatchClause>,
         finally_body: Option<Vec<CStmt>>,
+    },
+    ForEach {
+        element_type: TypeName,
+        var_name: String,
+        iterable: CExpr,
+        body: Vec<CStmt>,
+    },
+    Synchronized {
+        lock_expr: CExpr,
+        body: Vec<CStmt>,
     },
 }
 
@@ -172,6 +200,10 @@ pub enum CExpr {
         element_type: TypeName,
         size: Box<CExpr>,
     },
+    NewMultiArray {
+        element_type: TypeName,
+        dimensions: Vec<CExpr>,
+    },
     ArrayAccess {
         array: Box<CExpr>,
         index: Box<CExpr>,
@@ -188,5 +220,18 @@ pub enum CExpr {
         condition: Box<CExpr>,
         then_expr: Box<CExpr>,
         else_expr: Box<CExpr>,
+    },
+    SwitchExpr {
+        expr: Box<CExpr>,
+        cases: Vec<SwitchExprCase>,
+        default_expr: Box<CExpr>,
+    },
+    Lambda {
+        params: Vec<LambdaParam>,
+        body: LambdaBody,
+    },
+    MethodRef {
+        class_name: String,
+        method_name: String,
     },
 }

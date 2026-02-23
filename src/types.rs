@@ -3,8 +3,8 @@ use std::io::{Read, Seek};
 use crate::attribute_info::AttributeInfo;
 use crate::constant_info::{
     ClassConstant, ConstantInfo, DoubleConstant, FieldRefConstant, FloatConstant, IntegerConstant,
-    InterfaceMethodRefConstant, LongConstant, MethodRefConstant, NameAndTypeConstant,
-    StringConstant, Utf8Constant,
+    InterfaceMethodRefConstant, InvokeDynamicConstant, LongConstant, MethodHandleConstant,
+    MethodRefConstant, MethodTypeConstant, NameAndTypeConstant, StringConstant, Utf8Constant,
 };
 use crate::field_info::FieldInfo;
 use crate::method_info::MethodInfo;
@@ -496,6 +496,65 @@ impl ClassFile {
         self.const_pool
             .push(ConstantInfo::Double(DoubleConstant { value }));
         self.const_pool.push(ConstantInfo::Unusable);
+        index
+    }
+
+    pub fn get_or_add_method_handle(&mut self, reference_kind: u8, reference_index: u16) -> u16 {
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::MethodHandle(c) = entry {
+                if c.reference_kind == reference_kind && c.reference_index == reference_index {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::MethodHandle(MethodHandleConstant {
+                reference_kind,
+                reference_index,
+            }));
+        index
+    }
+
+    pub fn get_or_add_method_type(&mut self, descriptor: &str) -> u16 {
+        let desc_idx = self.get_or_add_utf8(descriptor);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::MethodType(c) = entry {
+                if c.descriptor_index == desc_idx {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::MethodType(MethodTypeConstant {
+                descriptor_index: desc_idx,
+            }));
+        index
+    }
+
+    pub fn get_or_add_invoke_dynamic(
+        &mut self,
+        bootstrap_method_attr_index: u16,
+        name: &str,
+        descriptor: &str,
+    ) -> u16 {
+        let nat_idx = self.get_or_add_name_and_type(name, descriptor);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::InvokeDynamic(c) = entry {
+                if c.bootstrap_method_attr_index == bootstrap_method_attr_index
+                    && c.name_and_type_index == nat_idx
+                {
+                    return (i + 1) as u16;
+                }
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool
+            .push(ConstantInfo::InvokeDynamic(InvokeDynamicConstant {
+                bootstrap_method_attr_index,
+                name_and_type_index: nat_idx,
+            }));
         index
     }
 

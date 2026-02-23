@@ -1,6 +1,10 @@
+use crate::attribute_info::{
+    AttributeInfo, AttributeInfoVariant, BootstrapMethod, BootstrapMethodsAttribute, CodeAttribute,
+};
 use crate::code_attribute::Instruction;
 use crate::decompile::descriptor::{parse_method_descriptor, JvmType};
 use crate::decompile::util::instruction_byte_size;
+use crate::method_info::{MethodAccessFlags, MethodInfo};
 use crate::ClassFile;
 
 use super::ast::*;
@@ -9,18 +13,19 @@ use super::CompileError;
 
 /// Tracks local variable allocation.
 struct LocalAllocator {
-    /// (name, type, slot)
-    locals: Vec<(String, TypeName, u16)>,
+    /// (name, type, slot, vtype)
+    locals: Vec<(String, TypeName, u16, VType)>,
     next_slot: u16,
 }
 
 impl LocalAllocator {
-    fn new(is_static: bool, method_descriptor: &str) -> Result<Self, CompileError> {
+    fn new(is_static: bool, method_descriptor: &str, class_file: &mut ClassFile) -> Result<Self, CompileError> {
         let mut next_slot: u16 = 0;
         let mut locals = Vec::new();
 
         if !is_static {
-            locals.push(("this".into(), TypeName::Class("this".into()), 0));
+            let vtype = VType::Object(class_file.this_class);
+            locals.push(("this".into(), TypeName::Class("this".into()), 0, vtype));
             next_slot = 1;
         }
 
@@ -33,8 +38,9 @@ impl LocalAllocator {
 
         for (i, param) in params.iter().enumerate() {
             let ty = jvm_type_to_type_name(param);
+            let vtype = jvm_type_to_vtype_resolved(param, class_file);
             let slot = next_slot;
-            locals.push((format!("__param{}", i), ty, slot));
+            locals.push((format!("__param{}", i), ty, slot, vtype));
             next_slot += if param.is_wide() { 2 } else { 1 };
         }
 
@@ -42,16 +48,21 @@ impl LocalAllocator {
     }
 
     fn allocate(&mut self, name: &str, ty: &TypeName) -> u16 {
+        let vtype = type_name_to_vtype(ty);
+        self.allocate_with_vtype(name, ty, vtype)
+    }
+
+    fn allocate_with_vtype(&mut self, name: &str, ty: &TypeName, vtype: VType) -> u16 {
         let slot = self.next_slot;
         let width = type_slot_width(ty);
-        self.locals.push((name.to_string(), ty.clone(), slot));
+        self.locals.push((name.to_string(), ty.clone(), slot, vtype));
         self.next_slot += width;
         slot
     }
 
     fn find(&self, name: &str) -> Option<(u16, &TypeName)> {
         // Search from the end to support shadowing
-        for (n, ty, slot) in self.locals.iter().rev() {
+        for (n, ty, slot, _) in self.locals.iter().rev() {
             if n == name {
                 return Some((*slot, ty));
             }
@@ -63,16 +74,23 @@ impl LocalAllocator {
         self.next_slot
     }
 
+    /// Save the current locals state for later restoration (scope support).
+    /// `next_slot` is NOT saved — it only ever increases to ensure max_locals is correct.
+    fn save(&self) -> Vec<(String, TypeName, u16, VType)> {
+        self.locals.clone()
+    }
+
+    /// Restore locals to a previous state (scope exit). Body-scoped locals are removed,
+    /// but `next_slot` stays at its high-water mark so max_locals remains correct.
+    fn restore(&mut self, saved: Vec<(String, TypeName, u16, VType)>) {
+        self.locals = saved;
+    }
+
     /// Get current locals as VType array for StackMapTable generation.
     fn current_locals_vtypes(&self) -> Vec<VType> {
         let mut vtypes = vec![VType::Top; self.next_slot as usize];
-        for (_, ty, slot) in &self.locals {
-            vtypes[*slot as usize] = type_name_to_vtype(ty);
-            if type_slot_width(ty) == 2 {
-                if (*slot as usize + 1) < vtypes.len() {
-                    vtypes[*slot as usize + 1] = VType::Top;
-                }
-            }
+        for (_, _, slot, vtype) in &self.locals {
+            vtypes[*slot as usize] = vtype.clone();
         }
         // Trim trailing Top values
         while vtypes.last() == Some(&VType::Top) {
@@ -131,6 +149,8 @@ pub struct CodeGenerator<'a> {
     exception_handler_labels: Vec<(usize, VType, Vec<VType>)>,
     /// Labels whose frame locals should be overridden (not taken from current allocator).
     label_locals_override: Vec<(usize, Vec<VType>)>,
+    /// Labels whose frame stack should be overridden (not empty).
+    label_stack_override: Vec<(usize, Vec<VType>)>,
 }
 
 impl<'a> CodeGenerator<'a> {
@@ -148,7 +168,7 @@ impl<'a> CodeGenerator<'a> {
         method_descriptor: &str,
         generate_stack_map_table: bool,
     ) -> Result<Self, CompileError> {
-        let locals = LocalAllocator::new(is_static, method_descriptor)?;
+        let locals = LocalAllocator::new(is_static, method_descriptor, class_file)?;
         let (params, ret) = parse_method_descriptor(method_descriptor).ok_or_else(|| {
             CompileError::CodegenError {
                 message: format!("invalid method descriptor: {}", method_descriptor),
@@ -163,7 +183,7 @@ impl<'a> CodeGenerator<'a> {
                 initial.push(VType::Object(class_file.this_class));
             }
             for param in &params {
-                initial.push(jvm_type_to_vtype(param));
+                initial.push(jvm_type_to_vtype_resolved(param, class_file));
                 if param.is_wide() {
                     initial.push(VType::Top);
                 }
@@ -187,6 +207,7 @@ impl<'a> CodeGenerator<'a> {
             frame_tracker,
             exception_handler_labels: Vec::new(),
             label_locals_override: Vec::new(),
+            label_stack_override: Vec::new(),
         })
     }
 
@@ -220,7 +241,14 @@ impl<'a> CodeGenerator<'a> {
                     .find(|(lid, _)| *lid == label_id)
                     .map(|(_, locals)| locals.clone());
                 let locals = overridden_locals.unwrap_or_else(|| self.locals.current_locals_vtypes());
-                (locals, Vec::new())
+                // Check for explicit stack override (e.g., expression-level merge points)
+                let stack = self
+                    .label_stack_override
+                    .iter()
+                    .find(|(lid, _)| *lid == label_id)
+                    .map(|(_, stack)| stack.clone())
+                    .unwrap_or_default();
+                (locals, stack)
             };
 
             // We need to compute the bytecode offset for this instruction index.
@@ -411,10 +439,29 @@ impl<'a> CodeGenerator<'a> {
     fn gen_stmt(&mut self, stmt: &CStmt) -> Result<(), CompileError> {
         match stmt {
             CStmt::LocalDecl { ty, name, init } => {
-                let slot = self.locals.allocate(name, ty);
+                let resolved_ty = if is_var_sentinel(ty) {
+                    match init {
+                        Some(expr) => self.infer_expr_type(expr),
+                        None => {
+                            return Err(CompileError::CodegenError {
+                                message: "'var' requires an initializer".into(),
+                            })
+                        }
+                    }
+                } else {
+                    ty.clone()
+                };
+                let vtype = type_name_to_vtype_resolved(&resolved_ty, self.class_file);
                 if let Some(expr) = init {
+                    // Generate initializer BEFORE allocating the slot so that
+                    // branch targets inside the initializer (ternaries, switch
+                    // expressions, comparisons) don't include the unassigned
+                    // local in their StackMapTable frames.
                     self.gen_expr(expr)?;
-                    self.emit_store(ty, slot);
+                    let slot = self.locals.allocate_with_vtype(name, &resolved_ty, vtype);
+                    self.emit_store(&resolved_ty, slot);
+                } else {
+                    self.locals.allocate_with_vtype(name, &resolved_ty, vtype);
                 }
                 Ok(())
             }
@@ -422,7 +469,16 @@ impl<'a> CodeGenerator<'a> {
                 self.gen_expr(expr)?;
                 // Pop the value if the expression leaves one on the stack
                 if self.expr_leaves_value(expr) {
-                    self.emit(Instruction::Pop);
+                    let ty = self.infer_expr_type(expr);
+                    match &ty {
+                        TypeName::Primitive(PrimitiveKind::Long)
+                        | TypeName::Primitive(PrimitiveKind::Double) => {
+                            self.emit(Instruction::Pop2);
+                        }
+                        _ => {
+                            self.emit(Instruction::Pop);
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -452,19 +508,26 @@ impl<'a> CodeGenerator<'a> {
                 else_body,
             } => {
                 let false_label = self.new_label();
+                let pre_branch_locals = self.locals.current_locals_vtypes();
+                self.label_locals_override.push((false_label, pre_branch_locals.clone()));
                 self.gen_condition(condition, false_label, false)?;
+                let saved = self.locals.save();
                 for s in then_body {
                     self.gen_stmt(s)?;
                 }
                 if let Some(else_stmts) = else_body {
                     let end_label = self.new_label();
+                    self.label_locals_override.push((end_label, pre_branch_locals));
                     self.emit_goto(end_label);
+                    self.locals.restore(saved.clone());
                     self.bind_label(false_label);
                     for s in else_stmts {
                         self.gen_stmt(s)?;
                     }
+                    self.locals.restore(saved);
                     self.bind_label(end_label);
                 } else {
+                    self.locals.restore(saved);
                     self.bind_label(false_label);
                 }
                 Ok(())
@@ -472,6 +535,8 @@ impl<'a> CodeGenerator<'a> {
             CStmt::While { condition, body } => {
                 let top_label = self.new_label();
                 let end_label = self.new_label();
+                let pre_body_locals = self.locals.current_locals_vtypes();
+                self.label_locals_override.push((end_label, pre_body_locals));
                 self.breakable_stack.push(BreakableContext {
                     break_label: end_label,
                     is_loop: true,
@@ -479,9 +544,11 @@ impl<'a> CodeGenerator<'a> {
                 });
                 self.bind_label(top_label);
                 self.gen_condition(condition, end_label, false)?;
+                let saved = self.locals.save();
                 for s in body {
                     self.gen_stmt(s)?;
                 }
+                self.locals.restore(saved);
                 self.emit_goto(top_label);
                 self.bind_label(end_label);
                 self.breakable_stack.pop();
@@ -499,6 +566,9 @@ impl<'a> CodeGenerator<'a> {
                 let top_label = self.new_label();
                 let update_label = self.new_label();
                 let end_label = self.new_label();
+                let pre_body_locals = self.locals.current_locals_vtypes();
+                self.label_locals_override.push((end_label, pre_body_locals.clone()));
+                self.label_locals_override.push((update_label, pre_body_locals));
                 self.breakable_stack.push(BreakableContext {
                     break_label: end_label,
                     is_loop: true,
@@ -508,9 +578,11 @@ impl<'a> CodeGenerator<'a> {
                 if let Some(cond) = condition {
                     self.gen_condition(cond, end_label, false)?;
                 }
+                let saved = self.locals.save();
                 for s in body {
                     self.gen_stmt(s)?;
                 }
+                self.locals.restore(saved);
                 self.bind_label(update_label);
                 if let Some(upd) = update {
                     self.gen_stmt(upd)?;
@@ -562,6 +634,19 @@ impl<'a> CodeGenerator<'a> {
             }
             CStmt::TryCatch { try_body, catches, finally_body } => {
                 self.gen_try_catch(try_body, catches, finally_body.as_deref())?;
+                Ok(())
+            }
+            CStmt::ForEach {
+                element_type,
+                var_name,
+                iterable,
+                body,
+            } => {
+                self.gen_foreach(element_type, var_name, iterable, body)?;
+                Ok(())
+            }
+            CStmt::Synchronized { lock_expr, body } => {
+                self.gen_synchronized(lock_expr, body)?;
                 Ok(())
             }
         }
@@ -628,53 +713,90 @@ impl<'a> CodeGenerator<'a> {
                 Ok(())
             }
             CExpr::BinaryOp { op, left, right } => {
+                let left_ty = self.infer_expr_type(left);
+                let right_ty = self.infer_expr_type(right);
+
+                // String concatenation: either operand is a String
+                if *op == BinOp::Add && (is_string_type(&left_ty) || is_string_type(&right_ty)) {
+                    return self.gen_string_concat(expr);
+                }
+
+                let promoted = promote_numeric_type(&left_ty, &right_ty);
                 self.gen_expr(left)?;
+                self.emit_widen_if_needed(&left_ty, &promoted);
                 self.gen_expr(right)?;
-                let instr = match op {
-                    BinOp::Add => Instruction::Iadd,
-                    BinOp::Sub => Instruction::Isub,
-                    BinOp::Mul => Instruction::Imul,
-                    BinOp::Div => Instruction::Idiv,
-                    BinOp::Rem => Instruction::Irem,
-                    BinOp::Shl => Instruction::Ishl,
-                    BinOp::Shr => Instruction::Ishr,
-                    BinOp::Ushr => Instruction::Iushr,
-                    BinOp::BitAnd => Instruction::Iand,
-                    BinOp::BitOr => Instruction::Ior,
-                    BinOp::BitXor => Instruction::Ixor,
-                };
-                self.emit(instr);
+                // Shift ops: right operand is always int, no widening
+                if !matches!(op, BinOp::Shl | BinOp::Shr | BinOp::Ushr) {
+                    self.emit_widen_if_needed(&right_ty, &promoted);
+                }
+                self.emit_typed_binary_op(op, &promoted);
                 Ok(())
             }
             CExpr::UnaryOp { op, operand } => {
+                let ty = self.infer_expr_type(operand);
                 self.gen_expr(operand)?;
                 match op {
                     UnaryOp::Neg => {
-                        self.emit(Instruction::Ineg);
+                        if is_long_type(&ty) {
+                            self.emit(Instruction::Lneg);
+                        } else if is_float_type(&ty) {
+                            self.emit(Instruction::Fneg);
+                        } else if is_double_type(&ty) {
+                            self.emit(Instruction::Dneg);
+                        } else {
+                            self.emit(Instruction::Ineg);
+                        }
                     }
                     UnaryOp::BitNot => {
                         // ~x == x ^ -1
-                        self.emit(Instruction::Iconstm1);
-                        self.emit(Instruction::Ixor);
+                        if is_long_type(&ty) {
+                            let cp_idx = self.class_file.get_or_add_long(-1);
+                            self.emit(Instruction::Ldc2W(cp_idx));
+                            self.emit(Instruction::Lxor);
+                        } else {
+                            self.emit(Instruction::Iconstm1);
+                            self.emit(Instruction::Ixor);
+                        }
                     }
                 }
                 Ok(())
             }
             CExpr::Comparison { op, left, right } => {
                 // Evaluate comparison to 0/1 using branches
+                let left_ty = self.infer_expr_type(left);
+                let right_ty = self.infer_expr_type(right);
+                let promoted = promote_numeric_type(&left_ty, &right_ty);
                 self.gen_expr(left)?;
+                self.emit_widen_if_needed(&left_ty, &promoted);
                 self.gen_expr(right)?;
+                self.emit_widen_if_needed(&right_ty, &promoted);
                 let true_label = self.new_label();
                 let end_label = self.new_label();
-                let branch = match op {
-                    CompareOp::Eq => Instruction::IfIcmpeq as fn(i16) -> Instruction,
-                    CompareOp::Ne => Instruction::IfIcmpne,
-                    CompareOp::Lt => Instruction::IfIcmplt,
-                    CompareOp::Le => Instruction::IfIcmple,
-                    CompareOp::Gt => Instruction::IfIcmpgt,
-                    CompareOp::Ge => Instruction::IfIcmpge,
-                };
-                self.emit_branch(branch, true_label);
+                // end_label has Integer on stack (result of iconst_0 or iconst_1)
+                self.label_stack_override.push((end_label, vec![VType::Integer]));
+                if is_int_type(&promoted) {
+                    let branch = match op {
+                        CompareOp::Eq => Instruction::IfIcmpeq as fn(i16) -> Instruction,
+                        CompareOp::Ne => Instruction::IfIcmpne,
+                        CompareOp::Lt => Instruction::IfIcmplt,
+                        CompareOp::Le => Instruction::IfIcmple,
+                        CompareOp::Gt => Instruction::IfIcmpgt,
+                        CompareOp::Ge => Instruction::IfIcmpge,
+                    };
+                    self.emit_branch(branch, true_label);
+                } else {
+                    // long/float/double: emit compare instruction, then branch on int result
+                    self.emit_typed_compare(&promoted, op);
+                    let branch = match op {
+                        CompareOp::Eq => Instruction::Ifeq as fn(i16) -> Instruction,
+                        CompareOp::Ne => Instruction::Ifne,
+                        CompareOp::Lt => Instruction::Iflt,
+                        CompareOp::Le => Instruction::Ifle,
+                        CompareOp::Gt => Instruction::Ifgt,
+                        CompareOp::Ge => Instruction::Ifge,
+                    };
+                    self.emit_branch(branch, true_label);
+                }
                 self.emit(Instruction::Iconst0);
                 self.emit_goto(end_label);
                 self.bind_label(true_label);
@@ -685,6 +807,8 @@ impl<'a> CodeGenerator<'a> {
             CExpr::LogicalAnd(left, right) => {
                 let false_label = self.new_label();
                 let end_label = self.new_label();
+                // end_label has Integer on stack (result of iconst_0 or iconst_1)
+                self.label_stack_override.push((end_label, vec![VType::Integer]));
                 self.gen_condition(left, false_label, false)?;
                 self.gen_condition(right, false_label, false)?;
                 self.emit(Instruction::Iconst1);
@@ -698,6 +822,8 @@ impl<'a> CodeGenerator<'a> {
                 let true_label = self.new_label();
                 let false_label = self.new_label();
                 let end_label = self.new_label();
+                // end_label has Integer on stack (result of iconst_0 or iconst_1)
+                self.label_stack_override.push((end_label, vec![VType::Integer]));
                 self.gen_condition(left, true_label, true)?;
                 self.gen_condition(right, false_label, false)?;
                 self.bind_label(true_label);
@@ -711,6 +837,8 @@ impl<'a> CodeGenerator<'a> {
             CExpr::LogicalNot(operand) => {
                 let true_label = self.new_label();
                 let end_label = self.new_label();
+                // end_label has Integer on stack (result of iconst_0 or iconst_1)
+                self.label_stack_override.push((end_label, vec![VType::Integer]));
                 self.gen_condition(operand, true_label, true)?;
                 // Condition was false, so !cond is true
                 self.emit(Instruction::Iconst1);
@@ -722,30 +850,48 @@ impl<'a> CodeGenerator<'a> {
                 Ok(())
             }
             CExpr::Assign { target, value } => {
-                self.gen_expr(value)?;
-                self.emit(Instruction::Dup); // leave value on stack for assignment expression
-                self.gen_store_target(target)?;
+                // Special-case array stores: emit arrayref, index, value, then xastore
+                if let CExpr::ArrayAccess { array, index } = target.as_ref() {
+                    let array_ty = self.infer_expr_type(array);
+                    self.gen_expr(array)?;
+                    self.gen_expr(index)?;
+                    self.gen_expr(value)?;
+                    // Dup the value under arrayref+index for expression result
+                    // For simplicity, just do the store without leaving value on stack
+                    // unless it's actually used as an expression (statements pop it anyway)
+                    self.emit_array_store(&array_ty);
+                } else {
+                    self.gen_expr(value)?;
+                    if type_slot_width(&self.infer_expr_type(value)) == 2 {
+                        self.emit(Instruction::Dup2);
+                    } else {
+                        self.emit(Instruction::Dup);
+                    }
+                    self.gen_store_target(target)?;
+                }
                 Ok(())
             }
             CExpr::CompoundAssign { op, target, value } => {
                 // Load current, compute, dup, store
+                let target_ty = self.infer_expr_type(target);
+                let value_ty = self.infer_expr_type(value);
+                let promoted = promote_numeric_type(&target_ty, &value_ty);
                 self.gen_expr(target)?;
+                self.emit_widen_if_needed(&target_ty, &promoted);
                 self.gen_expr(value)?;
-                let instr = match op {
-                    BinOp::Add => Instruction::Iadd,
-                    BinOp::Sub => Instruction::Isub,
-                    BinOp::Mul => Instruction::Imul,
-                    BinOp::Div => Instruction::Idiv,
-                    BinOp::Rem => Instruction::Irem,
-                    BinOp::Shl => Instruction::Ishl,
-                    BinOp::Shr => Instruction::Ishr,
-                    BinOp::Ushr => Instruction::Iushr,
-                    BinOp::BitAnd => Instruction::Iand,
-                    BinOp::BitOr => Instruction::Ior,
-                    BinOp::BitXor => Instruction::Ixor,
-                };
-                self.emit(instr);
-                self.emit(Instruction::Dup);
+                if !matches!(op, BinOp::Shl | BinOp::Shr | BinOp::Ushr) {
+                    self.emit_widen_if_needed(&value_ty, &promoted);
+                }
+                self.emit_typed_binary_op(op, &promoted);
+                // Narrow back to target type if needed (e.g. int += double would need d2i)
+                if numeric_rank(&promoted) > numeric_rank(&target_ty) {
+                    self.emit_narrow(&promoted, &target_ty);
+                }
+                if type_slot_width(&target_ty) == 2 {
+                    self.emit(Instruction::Dup2);
+                } else {
+                    self.emit(Instruction::Dup);
+                }
                 self.gen_store_target(target)?;
                 Ok(())
             }
@@ -766,9 +912,13 @@ impl<'a> CodeGenerator<'a> {
                         self.emit_load(&ty, slot);
                     } else {
                         self.emit_load(&ty, slot);
-                        self.emit(Instruction::Iconst1);
-                        self.emit(Instruction::Iadd);
-                        self.emit(Instruction::Dup);
+                        self.emit_typed_const_one(&ty);
+                        self.emit_typed_binary_op(&BinOp::Add, &ty);
+                        if type_slot_width(&ty) == 2 {
+                            self.emit(Instruction::Dup2);
+                        } else {
+                            self.emit(Instruction::Dup);
+                        }
                         self.emit_store(&ty, slot);
                     }
                     Ok(())
@@ -795,9 +945,13 @@ impl<'a> CodeGenerator<'a> {
                         self.emit_load(&ty, slot);
                     } else {
                         self.emit_load(&ty, slot);
-                        self.emit(Instruction::Iconst1);
-                        self.emit(Instruction::Isub);
-                        self.emit(Instruction::Dup);
+                        self.emit_typed_const_one(&ty);
+                        self.emit_typed_binary_op(&BinOp::Sub, &ty);
+                        if type_slot_width(&ty) == 2 {
+                            self.emit(Instruction::Dup2);
+                        } else {
+                            self.emit(Instruction::Dup);
+                        }
                         self.emit_store(&ty, slot);
                     }
                     Ok(())
@@ -823,9 +977,13 @@ impl<'a> CodeGenerator<'a> {
                             value: 1,
                         });
                     } else {
-                        self.emit(Instruction::Dup);
-                        self.emit(Instruction::Iconst1);
-                        self.emit(Instruction::Iadd);
+                        if type_slot_width(&ty) == 2 {
+                            self.emit(Instruction::Dup2);
+                        } else {
+                            self.emit(Instruction::Dup);
+                        }
+                        self.emit_typed_const_one(&ty);
+                        self.emit_typed_binary_op(&BinOp::Add, &ty);
                         self.emit_store(&ty, slot);
                     }
                     Ok(())
@@ -851,9 +1009,13 @@ impl<'a> CodeGenerator<'a> {
                             value: -1,
                         });
                     } else {
-                        self.emit(Instruction::Dup);
-                        self.emit(Instruction::Iconst1);
-                        self.emit(Instruction::Isub);
+                        if type_slot_width(&ty) == 2 {
+                            self.emit(Instruction::Dup2);
+                        } else {
+                            self.emit(Instruction::Dup);
+                        }
+                        self.emit_typed_const_one(&ty);
+                        self.emit_typed_binary_op(&BinOp::Sub, &ty);
                         self.emit_store(&ty, slot);
                     }
                     Ok(())
@@ -927,32 +1089,80 @@ impl<'a> CodeGenerator<'a> {
                 }
                 Ok(())
             }
+            CExpr::NewMultiArray {
+                element_type,
+                dimensions,
+            } => {
+                for dim in dimensions {
+                    self.gen_expr(dim)?;
+                }
+                let mut desc = String::new();
+                for _ in 0..dimensions.len() {
+                    desc.push('[');
+                }
+                desc.push_str(&type_name_to_descriptor(element_type));
+                let class_idx = self.class_file.get_or_add_class(&desc);
+                self.emit(Instruction::Multianewarray {
+                    index: class_idx,
+                    dimensions: dimensions.len() as u8,
+                });
+                Ok(())
+            }
             CExpr::ArrayAccess { array, index } => {
                 self.gen_expr(array)?;
                 self.gen_expr(index)?;
-                // Default to aaload for reference arrays, iaload for int arrays
-                self.emit(Instruction::Aaload);
+                let array_ty = self.infer_expr_type(array);
+                self.emit_array_load(&array_ty);
                 Ok(())
             }
             CExpr::Cast { ty, operand } => {
+                let src_ty = self.infer_expr_type(operand);
                 self.gen_expr(operand)?;
                 match ty {
                     TypeName::Primitive(kind) => {
-                        match kind {
-                            PrimitiveKind::Long => self.emit(Instruction::I2l),
-                            PrimitiveKind::Float => self.emit(Instruction::I2f),
-                            PrimitiveKind::Double => self.emit(Instruction::I2d),
-                            PrimitiveKind::Byte => self.emit(Instruction::I2b),
-                            PrimitiveKind::Char => self.emit(Instruction::I2c),
-                            PrimitiveKind::Short => self.emit(Instruction::I2s),
-                            PrimitiveKind::Int => return Ok(()), // no-op for int cast
-                            PrimitiveKind::Boolean => return Ok(()),
-                            PrimitiveKind::Void => {
+                        let src_rank = numeric_rank(&src_ty);
+                        let dst_rank = numeric_rank(ty);
+                        // Same rank or both int-like: may still need narrowing
+                        match (src_rank, kind) {
+                            // Source is int-like
+                            (0, PrimitiveKind::Long) => { self.emit(Instruction::I2l); }
+                            (0, PrimitiveKind::Float) => { self.emit(Instruction::I2f); }
+                            (0, PrimitiveKind::Double) => { self.emit(Instruction::I2d); }
+                            (0, PrimitiveKind::Byte) => { self.emit(Instruction::I2b); }
+                            (0, PrimitiveKind::Char) => { self.emit(Instruction::I2c); }
+                            (0, PrimitiveKind::Short) => { self.emit(Instruction::I2s); }
+                            (0, PrimitiveKind::Int) | (0, PrimitiveKind::Boolean) => {}
+                            // Source is long
+                            (1, PrimitiveKind::Int) => { self.emit(Instruction::L2i); }
+                            (1, PrimitiveKind::Float) => { self.emit(Instruction::L2f); }
+                            (1, PrimitiveKind::Double) => { self.emit(Instruction::L2d); }
+                            (1, PrimitiveKind::Byte) => { self.emit(Instruction::L2i); self.emit(Instruction::I2b); }
+                            (1, PrimitiveKind::Char) => { self.emit(Instruction::L2i); self.emit(Instruction::I2c); }
+                            (1, PrimitiveKind::Short) => { self.emit(Instruction::L2i); self.emit(Instruction::I2s); }
+                            (1, PrimitiveKind::Long) => {}
+                            // Source is float
+                            (2, PrimitiveKind::Int) => { self.emit(Instruction::F2i); }
+                            (2, PrimitiveKind::Long) => { self.emit(Instruction::F2l); }
+                            (2, PrimitiveKind::Double) => { self.emit(Instruction::F2d); }
+                            (2, PrimitiveKind::Byte) => { self.emit(Instruction::F2i); self.emit(Instruction::I2b); }
+                            (2, PrimitiveKind::Char) => { self.emit(Instruction::F2i); self.emit(Instruction::I2c); }
+                            (2, PrimitiveKind::Short) => { self.emit(Instruction::F2i); self.emit(Instruction::I2s); }
+                            (2, PrimitiveKind::Float) => {}
+                            // Source is double
+                            (3, PrimitiveKind::Int) => { self.emit(Instruction::D2i); }
+                            (3, PrimitiveKind::Long) => { self.emit(Instruction::D2l); }
+                            (3, PrimitiveKind::Float) => { self.emit(Instruction::D2f); }
+                            (3, PrimitiveKind::Byte) => { self.emit(Instruction::D2i); self.emit(Instruction::I2b); }
+                            (3, PrimitiveKind::Char) => { self.emit(Instruction::D2i); self.emit(Instruction::I2c); }
+                            (3, PrimitiveKind::Short) => { self.emit(Instruction::D2i); self.emit(Instruction::I2s); }
+                            (3, PrimitiveKind::Double) => {}
+                            (_, PrimitiveKind::Void) => {
                                 return Err(CompileError::CodegenError {
                                     message: "cannot cast to void".into(),
                                 })
                             }
-                        };
+                            _ => {} // same type, no-op
+                        }
                         Ok(())
                     }
                     TypeName::Class(name) => {
@@ -997,6 +1207,11 @@ impl<'a> CodeGenerator<'a> {
             } => {
                 let false_label = self.new_label();
                 let end_label = self.new_label();
+                // Both branches push a result value before reaching end_label
+                let result_vtype = type_name_to_vtype_resolved(&self.infer_expr_type(then_expr), self.class_file);
+                let result_stack = vec![result_vtype];
+                self.label_stack_override.push((false_label, Vec::new()));
+                self.label_stack_override.push((end_label, result_stack));
                 self.gen_condition(condition, false_label, false)?;
                 self.gen_expr(then_expr)?;
                 self.emit_goto(end_label);
@@ -1005,6 +1220,16 @@ impl<'a> CodeGenerator<'a> {
                 self.bind_label(end_label);
                 Ok(())
             }
+            CExpr::SwitchExpr {
+                expr,
+                cases,
+                default_expr,
+            } => self.gen_switch_expr(expr, cases, default_expr),
+            CExpr::Lambda { params, body } => self.gen_lambda(params, body),
+            CExpr::MethodRef {
+                class_name,
+                method_name,
+            } => self.gen_method_ref(class_name, method_name),
         }
     }
 
@@ -1074,29 +1299,59 @@ impl<'a> CodeGenerator<'a> {
                     return Ok(());
                 }
 
+                let left_ty = self.infer_expr_type(left);
+                let right_ty = self.infer_expr_type(right);
+                let promoted = promote_numeric_type(&left_ty, &right_ty);
                 self.gen_expr(left)?;
+                self.emit_widen_if_needed(&left_ty, &promoted);
                 self.gen_expr(right)?;
-                let branch = if jump_on_true {
-                    match op {
-                        CompareOp::Eq => Instruction::IfIcmpeq as fn(i16) -> Instruction,
-                        CompareOp::Ne => Instruction::IfIcmpne,
-                        CompareOp::Lt => Instruction::IfIcmplt,
-                        CompareOp::Le => Instruction::IfIcmple,
-                        CompareOp::Gt => Instruction::IfIcmpgt,
-                        CompareOp::Ge => Instruction::IfIcmpge,
-                    }
+                self.emit_widen_if_needed(&right_ty, &promoted);
+
+                if is_int_type(&promoted) {
+                    let branch = if jump_on_true {
+                        match op {
+                            CompareOp::Eq => Instruction::IfIcmpeq as fn(i16) -> Instruction,
+                            CompareOp::Ne => Instruction::IfIcmpne,
+                            CompareOp::Lt => Instruction::IfIcmplt,
+                            CompareOp::Le => Instruction::IfIcmple,
+                            CompareOp::Gt => Instruction::IfIcmpgt,
+                            CompareOp::Ge => Instruction::IfIcmpge,
+                        }
+                    } else {
+                        match op {
+                            CompareOp::Eq => Instruction::IfIcmpne as fn(i16) -> Instruction,
+                            CompareOp::Ne => Instruction::IfIcmpeq,
+                            CompareOp::Lt => Instruction::IfIcmpge,
+                            CompareOp::Le => Instruction::IfIcmpgt,
+                            CompareOp::Gt => Instruction::IfIcmple,
+                            CompareOp::Ge => Instruction::IfIcmplt,
+                        }
+                    };
+                    self.emit_branch(branch, target_label);
                 } else {
-                    // Inverted branch for "jump on false"
-                    match op {
-                        CompareOp::Eq => Instruction::IfIcmpne as fn(i16) -> Instruction,
-                        CompareOp::Ne => Instruction::IfIcmpeq,
-                        CompareOp::Lt => Instruction::IfIcmpge,
-                        CompareOp::Le => Instruction::IfIcmpgt,
-                        CompareOp::Gt => Instruction::IfIcmple,
-                        CompareOp::Ge => Instruction::IfIcmplt,
-                    }
-                };
-                self.emit_branch(branch, target_label);
+                    // long/float/double: compare instruction reduces to int, then branch
+                    self.emit_typed_compare(&promoted, op);
+                    let branch = if jump_on_true {
+                        match op {
+                            CompareOp::Eq => Instruction::Ifeq as fn(i16) -> Instruction,
+                            CompareOp::Ne => Instruction::Ifne,
+                            CompareOp::Lt => Instruction::Iflt,
+                            CompareOp::Le => Instruction::Ifle,
+                            CompareOp::Gt => Instruction::Ifgt,
+                            CompareOp::Ge => Instruction::Ifge,
+                        }
+                    } else {
+                        match op {
+                            CompareOp::Eq => Instruction::Ifne as fn(i16) -> Instruction,
+                            CompareOp::Ne => Instruction::Ifeq,
+                            CompareOp::Lt => Instruction::Ifge,
+                            CompareOp::Le => Instruction::Ifgt,
+                            CompareOp::Gt => Instruction::Ifle,
+                            CompareOp::Ge => Instruction::Iflt,
+                        }
+                    };
+                    self.emit_branch(branch, target_label);
+                }
                 Ok(())
             }
             CExpr::LogicalAnd(left, right) => {
@@ -1180,6 +1435,14 @@ impl<'a> CodeGenerator<'a> {
 
         // Create labels for each case body
         let case_labels: Vec<usize> = cases.iter().map(|_| self.new_label()).collect();
+
+        // Override all branch-target labels with pre-switch locals
+        let pre_case_locals = self.locals.current_locals_vtypes();
+        for &label in &case_labels {
+            self.label_locals_override.push((label, pre_case_locals.clone()));
+        }
+        self.label_locals_override.push((default_label, pre_case_locals.clone()));
+        self.label_locals_override.push((end_label, pre_case_locals));
 
         // Decide tableswitch vs lookupswitch
         let use_table = if value_to_case.is_empty() {
@@ -1274,6 +1537,630 @@ impl<'a> CodeGenerator<'a> {
         Ok(())
     }
 
+    fn gen_switch_expr(
+        &mut self,
+        expr: &CExpr,
+        cases: &[SwitchExprCase],
+        default_expr: &CExpr,
+    ) -> Result<(), CompileError> {
+        self.gen_expr(expr)?;
+
+        let end_label = self.new_label();
+        let default_label = self.new_label();
+
+        // Collect all (value, case_index) pairs
+        let mut value_to_case: Vec<(i32, usize)> = Vec::new();
+        for (case_idx, case) in cases.iter().enumerate() {
+            for &v in &case.values {
+                value_to_case.push((v as i32, case_idx));
+            }
+        }
+        value_to_case.sort_by_key(|&(v, _)| v);
+
+        let case_labels: Vec<usize> = cases.iter().map(|_| self.new_label()).collect();
+
+        // Override all branch-target labels with pre-switch locals
+        let pre_case_locals = self.locals.current_locals_vtypes();
+        for &label in &case_labels {
+            self.label_locals_override.push((label, pre_case_locals.clone()));
+        }
+        self.label_locals_override.push((default_label, pre_case_locals.clone()));
+        self.label_locals_override.push((end_label, pre_case_locals));
+
+        // end_label has the switch result on the stack
+        let result_vtype = type_name_to_vtype_resolved(&self.infer_expr_type(&cases[0].expr), self.class_file);
+        self.label_stack_override.push((end_label, vec![result_vtype]));
+
+        // Decide tableswitch vs lookupswitch
+        let use_table = if value_to_case.is_empty() {
+            false
+        } else {
+            let low = value_to_case.first().unwrap().0;
+            let high = value_to_case.last().unwrap().0;
+            let range = (high as i64 - low as i64 + 1) as usize;
+            range <= 2 * value_to_case.len()
+        };
+
+        if use_table && !value_to_case.is_empty() {
+            let low = value_to_case.first().unwrap().0;
+            let high = value_to_case.last().unwrap().0;
+
+            let mut offset_labels: Vec<usize> = Vec::new();
+            let mut val_idx = 0;
+            for v in low..=high {
+                if val_idx < value_to_case.len() && value_to_case[val_idx].0 == v {
+                    offset_labels.push(case_labels[value_to_case[val_idx].1]);
+                    val_idx += 1;
+                } else {
+                    offset_labels.push(default_label);
+                }
+            }
+
+            let placeholder = Instruction::Tableswitch {
+                default: 0,
+                low,
+                high,
+                offsets: vec![0i32; offset_labels.len()],
+            };
+            let instr_idx = self.emit(placeholder);
+            self.switch_patches.push(SwitchPatch {
+                instr_idx,
+                kind: SwitchPatchKind::Table {
+                    low,
+                    high,
+                    case_labels: offset_labels,
+                    default_label,
+                },
+            });
+        } else {
+            let pair_labels: Vec<(i32, usize)> = value_to_case
+                .iter()
+                .map(|&(v, case_idx)| (v, case_labels[case_idx]))
+                .collect();
+
+            let placeholder = Instruction::Lookupswitch {
+                default: 0,
+                npairs: pair_labels.len() as u32,
+                pairs: pair_labels.iter().map(|&(v, _)| (v, 0i32)).collect(),
+            };
+            let instr_idx = self.emit(placeholder);
+            self.switch_patches.push(SwitchPatch {
+                instr_idx,
+                kind: SwitchPatchKind::Lookup {
+                    pairs: pair_labels,
+                    default_label,
+                },
+            });
+        }
+
+        // Emit case expression bodies — each pushes a value then jumps to end
+        for (i, case) in cases.iter().enumerate() {
+            self.bind_label(case_labels[i]);
+            self.gen_expr(&case.expr)?;
+            self.emit_goto(end_label);
+        }
+
+        // Default
+        self.bind_label(default_label);
+        self.gen_expr(default_expr)?;
+
+        self.bind_label(end_label);
+        Ok(())
+    }
+
+    // --- Lambda codegen ---
+
+    fn gen_lambda(
+        &mut self,
+        params: &[LambdaParam],
+        body: &LambdaBody,
+    ) -> Result<(), CompileError> {
+        // Generate a synthetic static method name
+        let lambda_idx = self.class_file.methods.len();
+        let lambda_name = format!("lambda${}", lambda_idx);
+
+        // Build lambda method descriptor from params
+        // All typed params contribute to descriptor; untyped params default to Object
+        let mut param_descs = Vec::new();
+        for p in params {
+            let desc = match &p.ty {
+                Some(ty) => type_name_to_descriptor(ty),
+                None => "Ljava/lang/Object;".to_string(),
+            };
+            param_descs.push(desc);
+        }
+
+        // Infer return type from body
+        let return_desc = match body {
+            LambdaBody::Expr(expr) => {
+                let ty = self.infer_expr_type(expr);
+                type_name_to_descriptor(&ty)
+            }
+            LambdaBody::Block(_) => "V".to_string(), // Block lambdas default to void
+        };
+
+        let lambda_descriptor = format!(
+            "({}){}",
+            param_descs.join(""),
+            return_desc
+        );
+
+        // Build the SAM method descriptor (functional interface method type)
+        // This is the same as the lambda descriptor for simple cases
+        let sam_descriptor = lambda_descriptor.clone();
+
+        // Create the synthetic method body
+        let stmts: Vec<CStmt> = match body {
+            LambdaBody::Expr(expr) => {
+                if return_desc == "V" {
+                    vec![CStmt::ExprStmt(expr.as_ref().clone())]
+                } else {
+                    vec![CStmt::Return(Some(expr.as_ref().clone()))]
+                }
+            }
+            LambdaBody::Block(stmts) => stmts.clone(),
+        };
+
+        // Generate bytecode for the synthetic method
+        let mut lambda_codegen = CodeGenerator::new(
+            self.class_file,
+            true, // lambda methods are static
+            &lambda_descriptor,
+        )?;
+        lambda_codegen.generate_body(&stmts)?;
+        let generated = lambda_codegen.finish()?;
+
+        // Create Code attribute
+        let code_name_idx = self.class_file.get_or_add_utf8("Code");
+        let exception_table_length = generated.exception_table.len() as u16;
+        let code_attr = CodeAttribute {
+            max_stack: generated.max_stack,
+            max_locals: generated.max_locals,
+            code_length: 0,
+            code: generated.instructions,
+            exception_table_length,
+            exception_table: generated.exception_table,
+            attributes_count: 0,
+            attributes: Vec::new(),
+        };
+
+        let mut attr_info = AttributeInfo {
+            attribute_name_index: code_name_idx,
+            attribute_length: 0,
+            info: vec![],
+            info_parsed: Some(AttributeInfoVariant::Code(code_attr)),
+        };
+        attr_info.sync_from_parsed().map_err(|e| CompileError::CodegenError {
+            message: format!("sync_from_parsed for lambda Code failed: {}", e),
+        })?;
+
+        // Create the MethodInfo for the synthetic method
+        let name_idx = self.class_file.get_or_add_utf8(&lambda_name);
+        let desc_idx = self.class_file.get_or_add_utf8(&lambda_descriptor);
+
+        let method_info = MethodInfo {
+            access_flags: MethodAccessFlags::PRIVATE
+                | MethodAccessFlags::STATIC
+                | MethodAccessFlags::SYNTHETIC,
+            name_index: name_idx,
+            descriptor_index: desc_idx,
+            attributes_count: 1,
+            attributes: vec![attr_info],
+        };
+        self.class_file.methods.push(method_info);
+        self.class_file.sync_counts();
+
+        // Set up bootstrap method for LambdaMetafactory.metafactory
+        let bootstrap_idx = self.get_or_add_lambda_bootstrap()?;
+
+        // Build the invokedynamic constant
+        // The invokedynamic call site produces the functional interface instance.
+        // For now, use a generic functional interface based on the SAM type.
+        // The "invokedName" is the SAM method name (e.g., "run" for Runnable, "apply" for Function).
+        // We'll default to "run" for void-returning and "apply" for value-returning.
+        let invoke_name = if return_desc == "V" { "run" } else { "apply" };
+        let invoke_desc = format!("()L{};", self.guess_functional_interface(&param_descs, &return_desc));
+        let indy_idx = self.class_file.get_or_add_invoke_dynamic(
+            bootstrap_idx,
+            invoke_name,
+            &invoke_desc,
+        );
+
+        // Add bootstrap method arguments:
+        // 1. MethodType: SAM method type (e.g., "()V" for Runnable.run)
+        // 2. MethodHandle: impl method (our synthetic lambda method)
+        // 3. MethodType: instantiated method type (same as SAM type for non-generic)
+        let this_class_name = self.get_this_class_name()?;
+        let impl_method_ref = self.class_file.get_or_add_method_ref(
+            &this_class_name,
+            &lambda_name,
+            &lambda_descriptor,
+        );
+        let impl_handle = self.class_file.get_or_add_method_handle(
+            6, // REF_invokeStatic
+            impl_method_ref,
+        );
+        let sam_method_type = self.class_file.get_or_add_method_type(&sam_descriptor);
+        let instantiated_method_type = self.class_file.get_or_add_method_type(&sam_descriptor);
+
+        // Update the bootstrap method entry with the arguments
+        self.update_bootstrap_args(bootstrap_idx, &[sam_method_type, impl_handle, instantiated_method_type])?;
+
+        // Emit the invokedynamic instruction
+        self.emit(Instruction::Invokedynamic {
+            index: indy_idx,
+            filler: 0,
+        });
+
+        Ok(())
+    }
+
+    fn gen_method_ref(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Result<(), CompileError> {
+        // Method references compile similarly to lambdas but reference an existing method
+        let internal_class = resolve_class_name(class_name);
+
+        // Set up bootstrap
+        let bootstrap_idx = self.get_or_add_lambda_bootstrap()?;
+
+        // For static method references, we don't know the exact descriptor without more context.
+        // Default to a common pattern: SAM interface based on naming convention.
+        // This is a simplified implementation.
+        let invoke_name = "apply";
+        let invoke_desc = "()Ljava/util/function/Function;";
+
+        let indy_idx = self.class_file.get_or_add_invoke_dynamic(
+            bootstrap_idx,
+            invoke_name,
+            invoke_desc,
+        );
+
+        // Create method handle for the referenced method
+        // We need to guess the descriptor - for now use (Ljava/lang/Object;)Ljava/lang/String;
+        // which works for common cases like String::valueOf
+        let method_ref = self.class_file.get_or_add_method_ref(
+            &internal_class,
+            method_name,
+            "(Ljava/lang/Object;)Ljava/lang/String;",
+        );
+        let impl_handle = self.class_file.get_or_add_method_handle(6, method_ref);
+        let sam_type = self.class_file.get_or_add_method_type("(Ljava/lang/Object;)Ljava/lang/Object;");
+        let inst_type = self.class_file.get_or_add_method_type("(Ljava/lang/Object;)Ljava/lang/String;");
+
+        self.update_bootstrap_args(bootstrap_idx, &[sam_type, impl_handle, inst_type])?;
+
+        self.emit(Instruction::Invokedynamic {
+            index: indy_idx,
+            filler: 0,
+        });
+
+        Ok(())
+    }
+
+    /// Guess the functional interface class based on parameter/return types.
+    fn guess_functional_interface(&self, param_descs: &[String], return_desc: &str) -> String {
+        match (param_descs.len(), return_desc) {
+            (0, "V") => "java/lang/Runnable".into(),
+            (0, _) => "java/util/function/Supplier".into(),
+            (1, "V") => "java/util/function/Consumer".into(),
+            (1, "Z") => "java/util/function/Predicate".into(),
+            (1, _) => "java/util/function/Function".into(),
+            (2, _) => "java/util/function/BiFunction".into(),
+            _ => "java/lang/Runnable".into(),
+        }
+    }
+
+    /// Find or create the bootstrap method entry for LambdaMetafactory.metafactory.
+    fn get_or_add_lambda_bootstrap(&mut self) -> Result<u16, CompileError> {
+        // Build the method handle for LambdaMetafactory.metafactory
+        let metafactory_ref = self.class_file.get_or_add_method_ref(
+            "java/lang/invoke/LambdaMetafactory",
+            "metafactory",
+            "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
+        );
+        let metafactory_handle = self.class_file.get_or_add_method_handle(
+            6, // REF_invokeStatic
+            metafactory_ref,
+        );
+
+        // Find existing BootstrapMethods attribute on the class, or create one
+        let bsm_attr_idx = self.class_file.attributes.iter().position(|a| {
+            matches!(&a.info_parsed, Some(AttributeInfoVariant::BootstrapMethods(_)))
+        });
+
+        if let Some(idx) = bsm_attr_idx {
+            // Check if we already have this bootstrap method
+            if let Some(AttributeInfoVariant::BootstrapMethods(bsm)) =
+                &self.class_file.attributes[idx].info_parsed
+            {
+                for (i, bm) in bsm.bootstrap_methods.iter().enumerate() {
+                    if bm.bootstrap_method_ref == metafactory_handle {
+                        return Ok(i as u16);
+                    }
+                }
+            }
+
+            // Add new bootstrap method entry
+            let new_bm = BootstrapMethod {
+                bootstrap_method_ref: metafactory_handle,
+                num_bootstrap_arguments: 0,
+                bootstrap_arguments: Vec::new(),
+            };
+
+            if let Some(AttributeInfoVariant::BootstrapMethods(bsm)) =
+                &mut self.class_file.attributes[idx].info_parsed
+            {
+                let new_idx = bsm.bootstrap_methods.len() as u16;
+                bsm.bootstrap_methods.push(new_bm);
+                bsm.num_bootstrap_methods = bsm.bootstrap_methods.len() as u16;
+                return Ok(new_idx);
+            }
+            unreachable!()
+        } else {
+            // Create new BootstrapMethods attribute
+            let name_idx = self.class_file.get_or_add_utf8("BootstrapMethods");
+            let bsm_attr = BootstrapMethodsAttribute {
+                num_bootstrap_methods: 1,
+                bootstrap_methods: vec![BootstrapMethod {
+                    bootstrap_method_ref: metafactory_handle,
+                    num_bootstrap_arguments: 0,
+                    bootstrap_arguments: Vec::new(),
+                }],
+            };
+            let mut attr_info = AttributeInfo {
+                attribute_name_index: name_idx,
+                attribute_length: 0,
+                info: vec![],
+                info_parsed: Some(AttributeInfoVariant::BootstrapMethods(bsm_attr)),
+            };
+            attr_info.sync_from_parsed().map_err(|e| CompileError::CodegenError {
+                message: format!("sync_from_parsed for BootstrapMethods failed: {}", e),
+            })?;
+            self.class_file.attributes.push(attr_info);
+            self.class_file.sync_counts();
+            Ok(0)
+        }
+    }
+
+    /// Update bootstrap method arguments for a specific bootstrap method index.
+    fn update_bootstrap_args(
+        &mut self,
+        bootstrap_idx: u16,
+        args: &[u16],
+    ) -> Result<(), CompileError> {
+        let bsm_attr_idx = self.class_file.attributes.iter().position(|a| {
+            matches!(&a.info_parsed, Some(AttributeInfoVariant::BootstrapMethods(_)))
+        }).ok_or_else(|| CompileError::CodegenError {
+            message: "BootstrapMethods attribute not found".into(),
+        })?;
+
+        if let Some(AttributeInfoVariant::BootstrapMethods(bsm)) =
+            &mut self.class_file.attributes[bsm_attr_idx].info_parsed
+        {
+            let bm = &mut bsm.bootstrap_methods[bootstrap_idx as usize];
+            bm.bootstrap_arguments = args.to_vec();
+            bm.num_bootstrap_arguments = args.len() as u16;
+        }
+
+        // Re-sync the attribute
+        self.class_file.attributes[bsm_attr_idx]
+            .sync_from_parsed()
+            .map_err(|e| CompileError::CodegenError {
+                message: format!("sync_from_parsed for BootstrapMethods failed: {}", e),
+            })?;
+        self.class_file.sync_counts();
+
+        Ok(())
+    }
+
+    // --- For-each codegen ---
+
+    fn gen_foreach(
+        &mut self,
+        element_type: &TypeName,
+        var_name: &str,
+        iterable: &CExpr,
+        body: &[CStmt],
+    ) -> Result<(), CompileError> {
+        let iterable_ty = self.infer_expr_type(iterable);
+
+        if matches!(iterable_ty, TypeName::Array(_)) {
+            self.gen_foreach_array(element_type, var_name, iterable, body)
+        } else {
+            self.gen_foreach_iterable(element_type, var_name, iterable, body)
+        }
+    }
+
+    fn gen_foreach_array(
+        &mut self,
+        element_type: &TypeName,
+        var_name: &str,
+        iterable: &CExpr,
+        body: &[CStmt],
+    ) -> Result<(), CompileError> {
+        let array_ty = self.infer_expr_type(iterable);
+
+        // Save allocator state before for-each internal locals so they don't leak
+        let saved_locals = self.locals.save();
+
+        // Allocate temp slots (but NOT the loop variable yet — it must come after
+        // the loop-top label so the stack map frame doesn't include it on the first entry)
+        let arr_vtype = type_name_to_vtype_resolved(&array_ty, self.class_file);
+        let arr_slot = self.locals.allocate_with_vtype("__foreach_arr", &array_ty, arr_vtype);
+        let len_slot = self.locals.allocate("__foreach_len", &TypeName::Primitive(PrimitiveKind::Int));
+        let idx_slot = self.locals.allocate("__foreach_idx", &TypeName::Primitive(PrimitiveKind::Int));
+
+        // Evaluate iterable, store array ref
+        self.gen_expr(iterable)?;
+        self.emit_store(&array_ty, arr_slot);
+
+        // arraylength → len
+        self.emit_load(&array_ty, arr_slot);
+        self.emit(Instruction::Arraylength);
+        self.emit_store(&TypeName::Primitive(PrimitiveKind::Int), len_slot);
+
+        // i = 0
+        self.emit(Instruction::Iconst0);
+        self.emit_store(&TypeName::Primitive(PrimitiveKind::Int), idx_slot);
+
+        // Loop labels
+        let top_label = self.new_label();
+        let update_label = self.new_label();
+        let end_label = self.new_label();
+
+        // Override end_label frame to use pre-loop-variable locals
+        let pre_loop_locals = self.locals.current_locals_vtypes();
+        self.label_locals_override
+            .push((end_label, pre_loop_locals));
+
+        self.breakable_stack.push(BreakableContext {
+            break_label: end_label,
+            is_loop: true,
+            continue_label: Some(update_label),
+        });
+
+        // top: if (i >= len) goto end
+        self.bind_label(top_label);
+        self.emit_load(&TypeName::Primitive(PrimitiveKind::Int), idx_slot);
+        self.emit_load(&TypeName::Primitive(PrimitiveKind::Int), len_slot);
+        self.emit_branch(Instruction::IfIcmpge, end_label);
+
+        // Allocate loop variable AFTER the loop-top frame is recorded
+        let elem_vtype = type_name_to_vtype_resolved(element_type, self.class_file);
+        let var_slot = self.locals.allocate_with_vtype(var_name, element_type, elem_vtype);
+
+        // var = arr[i]
+        self.emit_load(&array_ty, arr_slot);
+        self.emit_load(&TypeName::Primitive(PrimitiveKind::Int), idx_slot);
+        self.emit_array_load(&array_ty);
+        self.emit_store(element_type, var_slot);
+
+        // body
+        for stmt in body {
+            self.gen_stmt(stmt)?;
+        }
+
+        // update: i++
+        self.bind_label(update_label);
+        if idx_slot <= 255 {
+            self.emit(Instruction::Iinc {
+                index: idx_slot as u8,
+                value: 1,
+            });
+        } else {
+            self.emit_load(&TypeName::Primitive(PrimitiveKind::Int), idx_slot);
+            self.emit(Instruction::Iconst1);
+            self.emit(Instruction::Iadd);
+            self.emit_store(&TypeName::Primitive(PrimitiveKind::Int), idx_slot);
+        }
+        self.emit_goto(top_label);
+
+        // Restore allocator so for-each internal locals don't leak
+        self.locals.restore(saved_locals);
+        self.bind_label(end_label);
+        self.breakable_stack.pop();
+        Ok(())
+    }
+
+    fn gen_foreach_iterable(
+        &mut self,
+        element_type: &TypeName,
+        var_name: &str,
+        iterable: &CExpr,
+        body: &[CStmt],
+    ) -> Result<(), CompileError> {
+        // Save allocator state before for-each internal locals so they don't leak
+        let saved_locals = self.locals.save();
+
+        let iter_ty = TypeName::Class("java/util/Iterator".into());
+        let iter_vtype = type_name_to_vtype_resolved(&iter_ty, self.class_file);
+        let iter_slot = self.locals.allocate_with_vtype("__foreach_iter", &iter_ty, iter_vtype);
+
+        // iterable.iterator() → iter_slot
+        self.gen_expr(iterable)?;
+        let iterator_idx = self.class_file.get_or_add_interface_method_ref(
+            "java/lang/Iterable",
+            "iterator",
+            "()Ljava/util/Iterator;",
+        );
+        self.emit(Instruction::Invokeinterface {
+            index: iterator_idx,
+            count: 1,
+            filler: 0,
+        });
+        self.emit_store(&iter_ty, iter_slot);
+
+        let top_label = self.new_label();
+        let end_label = self.new_label();
+
+        // Override end_label frame to use pre-loop-variable locals
+        let pre_loop_locals = self.locals.current_locals_vtypes();
+        self.label_locals_override
+            .push((end_label, pre_loop_locals));
+
+        self.breakable_stack.push(BreakableContext {
+            break_label: end_label,
+            is_loop: true,
+            continue_label: Some(top_label),
+        });
+
+        // top: if (!iter.hasNext()) goto end
+        self.bind_label(top_label);
+        self.emit_load(&iter_ty, iter_slot);
+        let has_next_idx = self.class_file.get_or_add_interface_method_ref(
+            "java/util/Iterator",
+            "hasNext",
+            "()Z",
+        );
+        self.emit(Instruction::Invokeinterface {
+            index: has_next_idx,
+            count: 1,
+            filler: 0,
+        });
+        self.emit_branch(Instruction::Ifeq, end_label);
+
+        // Allocate loop variable AFTER the loop-top frame is recorded
+        let elem_vtype = type_name_to_vtype_resolved(element_type, self.class_file);
+        let var_slot = self.locals.allocate_with_vtype(var_name, element_type, elem_vtype);
+
+        // var = (ElementType) iter.next()
+        self.emit_load(&iter_ty, iter_slot);
+        let next_idx = self.class_file.get_or_add_interface_method_ref(
+            "java/util/Iterator",
+            "next",
+            "()Ljava/lang/Object;",
+        );
+        self.emit(Instruction::Invokeinterface {
+            index: next_idx,
+            count: 1,
+            filler: 0,
+        });
+        // Checkcast if element type is not Object
+        if let TypeName::Class(name) = element_type {
+            if name != "Object" && name != "java/lang/Object" && name != "java.lang.Object" {
+                let internal = resolve_class_name(name);
+                let class_idx = self.class_file.get_or_add_class(&internal);
+                self.emit(Instruction::Checkcast(class_idx));
+            }
+        }
+        self.emit_store(element_type, var_slot);
+
+        // body
+        for stmt in body {
+            self.gen_stmt(stmt)?;
+        }
+        self.emit_goto(top_label);
+
+        // Restore allocator so for-each internal locals don't leak
+        self.locals.restore(saved_locals);
+        self.bind_label(end_label);
+        self.breakable_stack.pop();
+        Ok(())
+    }
+
     // --- Try-catch codegen ---
 
     fn gen_try_catch(
@@ -1308,24 +2195,40 @@ impl<'a> CodeGenerator<'a> {
         }
         self.emit_goto(after_all);
 
+        // Save allocator state before catch/finally handlers so their locals don't leak
+        let saved_locals = self.locals.save();
+
         // Emit each catch handler
         let mut catch_handler_labels = Vec::new();
         for catch in catches {
+            // Restore allocator for each catch handler so previous catch locals don't leak
+            self.locals.restore(saved_locals.clone());
             let handler_label = self.new_label();
             catch_handler_labels.push(handler_label);
-            // Register as exception handler for frame tracking
-            let internal = resolve_class_name(match &catch.exception_type {
-                TypeName::Class(name) => name.as_str(),
-                _ => "java/lang/Exception",
-            });
+            // Register as exception handler for frame tracking.
+            // For multi-catch, use java/lang/Throwable as the stack map type since
+            // we cannot compute the least common ancestor without class hierarchy
+            // knowledge. For single-catch, use the exact exception type.
+            let default_type = TypeName::Class("java/lang/Exception".into());
+            let first_type = catch.exception_types.first().unwrap_or(&default_type);
+            let frame_class_name = if catch.exception_types.len() > 1 {
+                "java/lang/Throwable"
+            } else {
+                match first_type {
+                    TypeName::Class(name) => name.as_str(),
+                    _ => "java/lang/Exception",
+                }
+            };
+            let internal = resolve_class_name(frame_class_name);
             let ex_class_idx = self.class_file.get_or_add_class(&internal);
             self.exception_handler_labels
                 .push((handler_label, VType::Object(ex_class_idx), locals_at_try_start.clone()));
             self.bind_label(handler_label);
 
-            // astore exception to a local
-            let ex_slot = self.locals.allocate(&catch.var_name, &catch.exception_type);
-            self.emit_store(&catch.exception_type, ex_slot);
+            // astore exception to a local (use first exception type for local type)
+            let ex_vtype = type_name_to_vtype_resolved(first_type, self.class_file);
+            let ex_slot = self.locals.allocate_with_vtype(&catch.var_name, first_type, ex_vtype);
+            self.emit_store(first_type, ex_slot);
 
             // Emit catch body
             for s in &catch.body {
@@ -1343,6 +2246,7 @@ impl<'a> CodeGenerator<'a> {
 
         // If finally present: emit catch-all handler that stores exception, runs finally, rethrows
         let catch_all_label = if finally_body.is_some() {
+            self.locals.restore(saved_locals.clone());
             let label = self.new_label();
             // Register as exception handler for frame tracking
             let throwable_idx = self.class_file.get_or_add_class("java/lang/Throwable");
@@ -1350,7 +2254,8 @@ impl<'a> CodeGenerator<'a> {
                 .push((label, VType::Object(throwable_idx), locals_at_try_start.clone()));
             self.bind_label(label);
             let ex_ty = TypeName::Class("java/lang/Throwable".into());
-            let ex_slot = self.locals.allocate("__finally_ex", &ex_ty);
+            let ex_vtype = type_name_to_vtype_resolved(&ex_ty, self.class_file);
+            let ex_slot = self.locals.allocate_with_vtype("__finally_ex", &ex_ty, ex_vtype);
             self.emit_store(&ex_ty, ex_slot);
             if let Some(fin_body) = finally_body {
                 for s in fin_body {
@@ -1364,21 +2269,26 @@ impl<'a> CodeGenerator<'a> {
             None
         };
 
+        // Restore allocator so catch/finally locals don't leak into subsequent code
+        self.locals.restore(saved_locals);
+
         self.bind_label(after_all);
 
-        // Register exception table entries
+        // Register exception table entries (one per exception type per catch)
         for (i, catch) in catches.iter().enumerate() {
-            let internal = resolve_class_name(match &catch.exception_type {
-                TypeName::Class(name) => name.as_str(),
-                _ => "java/lang/Exception",
-            });
-            let catch_type = self.class_file.get_or_add_class(&internal);
-            self.pending_exceptions.push(PendingExceptionEntry {
-                start_label: try_start,
-                end_label: try_end,
-                handler_label: catch_handler_labels[i],
-                catch_type,
-            });
+            for exc_type in &catch.exception_types {
+                let internal = resolve_class_name(match exc_type {
+                    TypeName::Class(name) => name.as_str(),
+                    _ => "java/lang/Exception",
+                });
+                let catch_type = self.class_file.get_or_add_class(&internal);
+                self.pending_exceptions.push(PendingExceptionEntry {
+                    start_label: try_start,
+                    end_label: try_end,
+                    handler_label: catch_handler_labels[i],
+                    catch_type,
+                });
+            }
         }
 
         // Catch-all for finally
@@ -1390,6 +2300,79 @@ impl<'a> CodeGenerator<'a> {
                 catch_type: 0, // 0 = catch all
             });
         }
+
+        Ok(())
+    }
+
+    // --- Synchronized codegen ---
+
+    fn gen_synchronized(
+        &mut self,
+        lock_expr: &CExpr,
+        body: &[CStmt],
+    ) -> Result<(), CompileError> {
+        let lock_ty = TypeName::Class("java/lang/Object".into());
+        let lock_vtype = type_name_to_vtype_resolved(&lock_ty, self.class_file);
+        let lock_slot = self.locals.allocate_with_vtype("__sync_lock", &lock_ty, lock_vtype);
+
+        // Evaluate lock expression, dup, store to temp, monitorenter
+        self.gen_expr(lock_expr)?;
+        self.emit(Instruction::Dup);
+        self.emit_store(&lock_ty, lock_slot);
+        self.emit(Instruction::Monitorenter);
+
+        let try_start = self.new_label();
+        let try_end = self.new_label();
+        let catch_handler = self.new_label();
+        let after_all = self.new_label();
+
+        // Capture locals at try-start for exception handler frames
+        let locals_at_try_start = self.locals.current_locals_vtypes();
+        self.label_locals_override
+            .push((after_all, locals_at_try_start.clone()));
+
+        // Try body
+        self.bind_label(try_start);
+        for s in body {
+            self.gen_stmt(s)?;
+        }
+        self.bind_label(try_end);
+
+        // Normal exit: monitorexit + goto after_all
+        self.emit_load(&lock_ty, lock_slot);
+        self.emit(Instruction::Monitorexit);
+        self.emit_goto(after_all);
+
+        // Save allocator state before catch-all handler so its locals don't leak
+        let saved_locals = self.locals.save();
+
+        // Catch-all handler: store exception, monitorexit, rethrow
+        let throwable_idx = self.class_file.get_or_add_class("java/lang/Throwable");
+        self.exception_handler_labels
+            .push((catch_handler, VType::Object(throwable_idx), locals_at_try_start));
+        self.bind_label(catch_handler);
+
+        let ex_ty = TypeName::Class("java/lang/Throwable".into());
+        let sync_ex_vtype = type_name_to_vtype_resolved(&ex_ty, self.class_file);
+        let ex_slot = self.locals.allocate_with_vtype("__sync_ex", &ex_ty, sync_ex_vtype);
+        self.emit_store(&ex_ty, ex_slot);
+        self.emit_load(&lock_ty, lock_slot);
+        self.emit(Instruction::Monitorexit);
+        self.emit_load(&ex_ty, ex_slot);
+        self.emit(Instruction::Athrow);
+
+        // Restore allocator so catch-all locals don't leak
+        self.locals.restore(saved_locals);
+
+        self.bind_label(after_all);
+
+        // Exception table: [try_start, try_end) → catch_handler, catch_type=0 (catch all)
+        self.pending_exceptions.push(PendingExceptionEntry {
+            start_label: try_start,
+            end_label: try_end,
+            handler_label: catch_handler,
+            catch_type: 0,
+        });
 
         Ok(())
     }
@@ -1431,10 +2414,22 @@ impl<'a> CodeGenerator<'a> {
                 // Try to find the method ref in the constant pool
                 let descriptor = self.find_method_descriptor_in_pool(name, args)?;
                 let class_name = self.infer_receiver_class(obj)?;
-                let method_idx =
-                    self.class_file
-                        .get_or_add_method_ref(&class_name, name, &descriptor);
-                self.emit(Instruction::Invokevirtual(method_idx));
+                if self.is_interface_method(&class_name, name) {
+                    let method_idx = self.class_file.get_or_add_interface_method_ref(
+                        &class_name, name, &descriptor,
+                    );
+                    let count = compute_invokeinterface_count(&descriptor);
+                    self.emit(Instruction::Invokeinterface {
+                        index: method_idx,
+                        count,
+                        filler: 0,
+                    });
+                } else {
+                    let method_idx =
+                        self.class_file
+                            .get_or_add_method_ref(&class_name, name, &descriptor);
+                    self.emit(Instruction::Invokevirtual(method_idx));
+                }
                 Ok(())
             }
             None => {
@@ -1480,10 +2475,13 @@ impl<'a> CodeGenerator<'a> {
 
     fn gen_field_access(&mut self, object: &CExpr, name: &str) -> Result<(), CompileError> {
         // Check if this is a static field access (e.g., System.out)
-        if let CExpr::Ident(class_name) = object {
-            if class_name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                // Likely static field access
-                return self.gen_static_field_access(class_name, name);
+        if let CExpr::Ident(ident_name) = object {
+            // Check constant pool for a FieldRef with this class name
+            let resolved = resolve_class_name(ident_name);
+            if self.has_field_ref_for_class(&resolved, name)
+                || ident_name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            {
+                return self.gen_static_field_access(ident_name, name);
             }
         }
         self.gen_expr(object)?;
@@ -1596,29 +2594,45 @@ impl<'a> CodeGenerator<'a> {
                 Ok(())
             }
             CExpr::FieldAccess { object, name } => {
-                // value is on stack, we need object ref below it
-                // This is tricky — for simple cases, re-emit the object load
-                // TODO: handle more complex cases
-                self.gen_expr(object)?;
-                self.emit(Instruction::Swap);
+                // value is on stack, we need [objectref, value] for putfield
                 let class_name = self.infer_receiver_class(object)?;
                 let descriptor = self.find_field_descriptor_in_pool(&class_name, name)?;
                 let field_idx =
                     self.class_file
                         .get_or_add_field_ref(&class_name, name, &descriptor);
+
+                let value_ty = descriptor_to_type(&descriptor);
+                if type_slot_width(&value_ty) == 2 {
+                    // Category-2 value (long/double): Swap won't work.
+                    // Store value to temp, push objectref, reload value.
+                    let tmp_vtype = type_name_to_vtype_resolved(&value_ty, self.class_file);
+                    let temp = self.locals.allocate_with_vtype("__field_tmp", &value_ty, tmp_vtype);
+                    self.emit_store(&value_ty, temp);
+                    self.gen_expr(object)?;
+                    self.emit_load(&value_ty, temp);
+                } else {
+                    // Category-1: Swap works fine
+                    self.gen_expr(object)?;
+                    self.emit(Instruction::Swap);
+                }
                 self.emit(Instruction::Putfield(field_idx));
                 Ok(())
             }
             CExpr::ArrayAccess { array, index } => {
+                // Stack has: [..., value]. We need: [..., arrayref, index, value]
+                // Strategy: store value to temp, push arrayref+index, reload value, store
+                let array_ty = self.infer_expr_type(array);
+                let elem_ty = match &array_ty {
+                    TypeName::Array(inner) => inner.as_ref().clone(),
+                    _ => TypeName::Primitive(PrimitiveKind::Int),
+                };
+                let arr_tmp_vtype = type_name_to_vtype_resolved(&elem_ty, self.class_file);
+                let temp = self.locals.allocate_with_vtype("__arr_store_tmp", &elem_ty, arr_tmp_vtype);
+                self.emit_store(&elem_ty, temp);
                 self.gen_expr(array)?;
                 self.gen_expr(index)?;
-                // Rotate: value, array, index -> array, index, value
-                // Use dup_x2 + pop pattern
-                // Actually the value was dup'd before calling gen_store_target,
-                // so stack is: ..., value(dup'd), and we need to store into array[index]
-                // We need: arrayref, index, value
-                // Hmm, this needs careful stack manipulation. For MVP, just re-evaluate.
-                self.emit(Instruction::Iastore); // or aastore
+                self.emit_load(&elem_ty, temp);
+                self.emit_array_store(&array_ty);
                 Ok(())
             }
             _ => Err(CompileError::CodegenError {
@@ -1631,7 +2645,11 @@ impl<'a> CodeGenerator<'a> {
 
     fn expr_leaves_value(&self, expr: &CExpr) -> bool {
         match expr {
-            CExpr::Assign { .. } | CExpr::CompoundAssign { .. } => true,
+            CExpr::Assign { target, .. } => {
+                // Array stores don't leave a value on the stack in our codegen
+                !matches!(target.as_ref(), CExpr::ArrayAccess { .. })
+            }
+            CExpr::CompoundAssign { .. } => true,
             CExpr::PostIncrement(_) | CExpr::PostDecrement(_) => true,
             CExpr::PreIncrement(_) | CExpr::PreDecrement(_) => true,
             CExpr::MethodCall { object, name, .. } => {
@@ -1845,6 +2863,322 @@ impl<'a> CodeGenerator<'a> {
         }
     }
 
+    // --- Typed instruction emission ---
+
+    fn emit_typed_binary_op(&mut self, op: &BinOp, ty: &TypeName) {
+        if is_long_type(ty) {
+            let instr = match op {
+                BinOp::Add => Instruction::Ladd,
+                BinOp::Sub => Instruction::Lsub,
+                BinOp::Mul => Instruction::Lmul,
+                BinOp::Div => Instruction::Ldiv,
+                BinOp::Rem => Instruction::Lrem,
+                BinOp::Shl => Instruction::Lshl,
+                BinOp::Shr => Instruction::Lshr,
+                BinOp::Ushr => Instruction::Lushr,
+                BinOp::BitAnd => Instruction::Land,
+                BinOp::BitOr => Instruction::Lor,
+                BinOp::BitXor => Instruction::Lxor,
+            };
+            self.emit(instr);
+        } else if is_float_type(ty) {
+            let instr = match op {
+                BinOp::Add => Instruction::Fadd,
+                BinOp::Sub => Instruction::Fsub,
+                BinOp::Mul => Instruction::Fmul,
+                BinOp::Div => Instruction::Fdiv,
+                BinOp::Rem => Instruction::Frem,
+                // Bitwise/shift not valid on float; emit int fallback
+                _ => Instruction::Iadd,
+            };
+            self.emit(instr);
+        } else if is_double_type(ty) {
+            let instr = match op {
+                BinOp::Add => Instruction::Dadd,
+                BinOp::Sub => Instruction::Dsub,
+                BinOp::Mul => Instruction::Dmul,
+                BinOp::Div => Instruction::Ddiv,
+                BinOp::Rem => Instruction::Drem,
+                // Bitwise/shift not valid on double; emit int fallback
+                _ => Instruction::Iadd,
+            };
+            self.emit(instr);
+        } else {
+            // int and sub-int types
+            let instr = match op {
+                BinOp::Add => Instruction::Iadd,
+                BinOp::Sub => Instruction::Isub,
+                BinOp::Mul => Instruction::Imul,
+                BinOp::Div => Instruction::Idiv,
+                BinOp::Rem => Instruction::Irem,
+                BinOp::Shl => Instruction::Ishl,
+                BinOp::Shr => Instruction::Ishr,
+                BinOp::Ushr => Instruction::Iushr,
+                BinOp::BitAnd => Instruction::Iand,
+                BinOp::BitOr => Instruction::Ior,
+                BinOp::BitXor => Instruction::Ixor,
+            };
+            self.emit(instr);
+        }
+    }
+
+    /// Emit a typed comparison instruction for non-int types.
+    /// For long: lcmp; for float: fcmpl/fcmpg; for double: dcmpl/dcmpg.
+    /// The result is an int that can be used with ifeq/ifne/iflt/ifge/ifgt/ifle.
+    fn emit_typed_compare(&mut self, ty: &TypeName, op: &CompareOp) {
+        if is_long_type(ty) {
+            self.emit(Instruction::Lcmp);
+        } else if is_float_type(ty) {
+            // fcmpg for > and >= (NaN → 1, so false branch taken correctly)
+            // fcmpl for everything else (NaN → -1)
+            match op {
+                CompareOp::Gt | CompareOp::Ge => self.emit(Instruction::Fcmpg),
+                _ => self.emit(Instruction::Fcmpl),
+            };
+        } else if is_double_type(ty) {
+            match op {
+                CompareOp::Gt | CompareOp::Ge => self.emit(Instruction::Dcmpg),
+                _ => self.emit(Instruction::Dcmpl),
+            };
+        }
+    }
+
+    // --- String concatenation ---
+
+    /// Check if a BinaryOp::Add expression involves string concatenation.
+    fn is_string_concat(&self, expr: &CExpr) -> bool {
+        if let CExpr::BinaryOp { op: BinOp::Add, left, right } = expr {
+            let lt = self.infer_expr_type(left);
+            let rt = self.infer_expr_type(right);
+            is_string_type(&lt) || is_string_type(&rt)
+                || self.is_string_concat(left)
+                || self.is_string_concat(right)
+        } else {
+            false
+        }
+    }
+
+    /// Flatten a chain of BinaryOp::Add nodes into a list of parts for StringBuilder.
+    fn flatten_string_concat<'b>(&self, expr: &'b CExpr, parts: &mut Vec<&'b CExpr>) {
+        if let CExpr::BinaryOp { op: BinOp::Add, left, right } = expr {
+            if self.is_string_concat(expr) {
+                self.flatten_string_concat(left, parts);
+                self.flatten_string_concat(right, parts);
+                return;
+            }
+        }
+        parts.push(expr);
+    }
+
+    /// Generate StringBuilder-based string concatenation.
+    fn gen_string_concat(&mut self, expr: &CExpr) -> Result<(), CompileError> {
+        let mut parts = Vec::new();
+        self.flatten_string_concat(expr, &mut parts);
+
+        // new StringBuilder()
+        let sb_class = self.class_file.get_or_add_class("java/lang/StringBuilder");
+        self.emit(Instruction::New(sb_class));
+        self.emit(Instruction::Dup);
+        let init_idx = self.class_file.get_or_add_method_ref(
+            "java/lang/StringBuilder",
+            "<init>",
+            "()V",
+        );
+        self.emit(Instruction::Invokespecial(init_idx));
+
+        // .append(part) for each part
+        for part in &parts {
+            let desc = self.infer_append_descriptor(part);
+            self.gen_expr(part)?;
+            let append_idx = self.class_file.get_or_add_method_ref(
+                "java/lang/StringBuilder",
+                "append",
+                &desc,
+            );
+            self.emit(Instruction::Invokevirtual(append_idx));
+        }
+
+        // .toString()
+        let tostring_idx = self.class_file.get_or_add_method_ref(
+            "java/lang/StringBuilder",
+            "toString",
+            "()Ljava/lang/String;",
+        );
+        self.emit(Instruction::Invokevirtual(tostring_idx));
+        Ok(())
+    }
+
+    // --- Type inference ---
+
+    /// Infer the type that an expression produces on the JVM stack.
+    fn infer_expr_type(&self, expr: &CExpr) -> TypeName {
+        match expr {
+            CExpr::IntLiteral(_) => TypeName::Primitive(PrimitiveKind::Int),
+            CExpr::LongLiteral(_) => TypeName::Primitive(PrimitiveKind::Long),
+            CExpr::FloatLiteral(_) => TypeName::Primitive(PrimitiveKind::Float),
+            CExpr::DoubleLiteral(_) => TypeName::Primitive(PrimitiveKind::Double),
+            CExpr::BoolLiteral(_) => TypeName::Primitive(PrimitiveKind::Boolean),
+            CExpr::CharLiteral(_) => TypeName::Primitive(PrimitiveKind::Char),
+            CExpr::StringLiteral(_) => TypeName::Class("String".into()),
+            CExpr::NullLiteral => TypeName::Class("Object".into()),
+            CExpr::This => TypeName::Class("this".into()),
+            CExpr::Ident(name) => {
+                if let Some((_, ty)) = self.locals.find(name) {
+                    ty.clone()
+                } else {
+                    TypeName::Primitive(PrimitiveKind::Int)
+                }
+            }
+            CExpr::BinaryOp { op, left, right } => {
+                let lt = self.infer_expr_type(left);
+                let rt = self.infer_expr_type(right);
+                if *op == BinOp::Add && (is_string_type(&lt) || is_string_type(&rt)) {
+                    TypeName::Class("String".into())
+                } else {
+                    promote_numeric_type(&lt, &rt)
+                }
+            }
+            CExpr::UnaryOp { operand, .. } => self.infer_expr_type(operand),
+            CExpr::Comparison { .. }
+            | CExpr::LogicalAnd(_, _)
+            | CExpr::LogicalOr(_, _)
+            | CExpr::LogicalNot(_)
+            | CExpr::Instanceof { .. } => TypeName::Primitive(PrimitiveKind::Boolean),
+            CExpr::Cast { ty, .. } => ty.clone(),
+            CExpr::Assign { value, .. } => self.infer_expr_type(value),
+            CExpr::CompoundAssign { target, .. } => self.infer_expr_type(target),
+            CExpr::PreIncrement(e) | CExpr::PreDecrement(e)
+            | CExpr::PostIncrement(e) | CExpr::PostDecrement(e) => self.infer_expr_type(e),
+            CExpr::NewObject { class_name, .. } => TypeName::Class(class_name.clone()),
+            CExpr::NewArray { element_type, .. } => TypeName::Array(Box::new(element_type.clone())),
+            CExpr::NewMultiArray {
+                element_type,
+                dimensions,
+            } => {
+                let mut ty = element_type.clone();
+                for _ in 0..dimensions.len() {
+                    ty = TypeName::Array(Box::new(ty));
+                }
+                ty
+            }
+            CExpr::SwitchExpr {
+                cases,
+                default_expr,
+                ..
+            } => {
+                if let Some(first_case) = cases.first() {
+                    self.infer_expr_type(&first_case.expr)
+                } else {
+                    self.infer_expr_type(default_expr)
+                }
+            }
+            CExpr::Lambda { .. } | CExpr::MethodRef { .. } => {
+                TypeName::Class("Object".into())
+            }
+            CExpr::ArrayAccess { array, .. } => {
+                match self.infer_expr_type(array) {
+                    TypeName::Array(inner) => *inner,
+                    _ => TypeName::Primitive(PrimitiveKind::Int), // fallback
+                }
+            }
+            CExpr::Ternary { then_expr, .. } => self.infer_expr_type(then_expr),
+            CExpr::MethodCall { name, args, .. } | CExpr::StaticMethodCall { name, args, .. } => {
+                // Try to infer return type from method descriptor
+                if let Ok(desc) = self.find_method_descriptor_in_pool(name, args) {
+                    if let Some(ret_start) = desc.rfind(')') {
+                        let ret_desc = &desc[ret_start + 1..];
+                        return descriptor_to_type(ret_desc);
+                    }
+                }
+                TypeName::Class("Object".into())
+            }
+            CExpr::FieldAccess { .. } | CExpr::StaticFieldAccess { .. } => {
+                TypeName::Class("Object".into())
+            }
+        }
+    }
+
+    /// Emit a widening conversion if `from` is narrower than `to`.
+    fn emit_widen_if_needed(&mut self, from: &TypeName, to: &TypeName) {
+        if numeric_rank(from) >= numeric_rank(to) {
+            return;
+        }
+        match (numeric_rank(from), numeric_rank(to)) {
+            (0, 1) => { self.emit(Instruction::I2l); }  // int → long
+            (0, 2) => { self.emit(Instruction::I2f); }  // int → float
+            (0, 3) => { self.emit(Instruction::I2d); }  // int → double
+            (1, 2) => { self.emit(Instruction::L2f); }  // long → float
+            (1, 3) => { self.emit(Instruction::L2d); }  // long → double
+            (2, 3) => { self.emit(Instruction::F2d); }  // float → double
+            _ => {}
+        }
+    }
+
+    /// Emit a type-appropriate array load instruction based on the array type.
+    fn emit_array_load(&mut self, array_ty: &TypeName) {
+        match array_ty {
+            TypeName::Array(inner) => match inner.as_ref() {
+                TypeName::Primitive(PrimitiveKind::Int) => { self.emit(Instruction::Iaload); }
+                TypeName::Primitive(PrimitiveKind::Long) => { self.emit(Instruction::Laload); }
+                TypeName::Primitive(PrimitiveKind::Float) => { self.emit(Instruction::Faload); }
+                TypeName::Primitive(PrimitiveKind::Double) => { self.emit(Instruction::Daload); }
+                TypeName::Primitive(PrimitiveKind::Byte | PrimitiveKind::Boolean) => { self.emit(Instruction::Baload); }
+                TypeName::Primitive(PrimitiveKind::Char) => { self.emit(Instruction::Caload); }
+                TypeName::Primitive(PrimitiveKind::Short) => { self.emit(Instruction::Saload); }
+                _ => { self.emit(Instruction::Aaload); }
+            },
+            _ => { self.emit(Instruction::Aaload); }
+        }
+    }
+
+    /// Emit a type-appropriate array store instruction based on the array type.
+    fn emit_array_store(&mut self, array_ty: &TypeName) {
+        match array_ty {
+            TypeName::Array(inner) => match inner.as_ref() {
+                TypeName::Primitive(PrimitiveKind::Int) => { self.emit(Instruction::Iastore); }
+                TypeName::Primitive(PrimitiveKind::Long) => { self.emit(Instruction::Lastore); }
+                TypeName::Primitive(PrimitiveKind::Float) => { self.emit(Instruction::Fastore); }
+                TypeName::Primitive(PrimitiveKind::Double) => { self.emit(Instruction::Dastore); }
+                TypeName::Primitive(PrimitiveKind::Byte | PrimitiveKind::Boolean) => { self.emit(Instruction::Bastore); }
+                TypeName::Primitive(PrimitiveKind::Char) => { self.emit(Instruction::Castore); }
+                TypeName::Primitive(PrimitiveKind::Short) => { self.emit(Instruction::Sastore); }
+                _ => { self.emit(Instruction::Aastore); }
+            },
+            _ => { self.emit(Instruction::Aastore); }
+        }
+    }
+
+    /// Emit the constant `1` in the appropriate type.
+    fn emit_typed_const_one(&mut self, ty: &TypeName) {
+        if is_long_type(ty) {
+            self.emit(Instruction::Lconst1);
+        } else if is_float_type(ty) {
+            self.emit(Instruction::Fconst1);
+        } else if is_double_type(ty) {
+            self.emit(Instruction::Dconst1);
+        } else {
+            self.emit(Instruction::Iconst1);
+        }
+    }
+
+    /// Emit a narrowing conversion from a wider type back to a target type.
+    fn emit_narrow(&mut self, from: &TypeName, to: &TypeName) {
+        let from_rank = numeric_rank(from);
+        let to_rank = numeric_rank(to);
+        if from_rank <= to_rank {
+            return;
+        }
+        match (from_rank, to_rank) {
+            (3, 2) => { self.emit(Instruction::D2f); }
+            (3, 1) => { self.emit(Instruction::D2l); }
+            (3, 0) => { self.emit(Instruction::D2i); }
+            (2, 1) => { self.emit(Instruction::F2l); }
+            (2, 0) => { self.emit(Instruction::F2i); }
+            (1, 0) => { self.emit(Instruction::L2i); }
+            _ => {}
+        }
+    }
+
     // --- Type/descriptor resolution helpers ---
 
     fn get_this_class_name(&self) -> Result<String, CompileError> {
@@ -1895,8 +3229,20 @@ impl<'a> CodeGenerator<'a> {
                     message: format!("cannot infer class for field access '{}'", field_name),
                 })
             }
-            CExpr::MethodCall { name, .. } => {
+            CExpr::MethodCall { object, name, args, .. } => {
                 // Try to infer from method return type in pool
+                if let Some(obj) = object {
+                    if let Ok(owner_class) = self.infer_receiver_class(obj) {
+                        if let Ok(desc) = self.find_method_descriptor_in_pool(name, args) {
+                            // Extract return type from descriptor (everything after ')')
+                            if let Some(ret_desc) = desc.rsplit(')').next() {
+                                if let Ok(internal) = descriptor_to_internal(ret_desc) {
+                                    return Ok(internal);
+                                }
+                            }
+                        }
+                    }
+                }
                 Err(CompileError::CodegenError {
                     message: format!("cannot infer class for method call '{}'", name),
                 })
@@ -1967,14 +3313,8 @@ impl<'a> CodeGenerator<'a> {
             }
         }
 
-        Err(CompileError::CodegenError {
-            message: format!(
-                "cannot find method '{}' with {} args in constant pool; \
-                 consider using a class with this method already referenced",
-                method_name,
-                args.len()
-            ),
-        })
+        // Not found in pool — infer descriptor from argument types
+        Ok(self.infer_method_descriptor(method_name, args))
     }
 
     fn infer_println_descriptor(&self, arg: &CExpr) -> String {
@@ -2003,45 +3343,48 @@ impl<'a> CodeGenerator<'a> {
                 }
                 "(Ljava/lang/Object;)V".into()
             }
-            // For method calls and other complex expressions, assume Object
-            _ => "(Ljava/lang/Object;)V".into(),
+            // For compound expressions, infer the result type
+            _ => {
+                let ty = self.infer_expr_type(arg);
+                match &ty {
+                    TypeName::Primitive(PrimitiveKind::Int)
+                    | TypeName::Primitive(PrimitiveKind::Byte)
+                    | TypeName::Primitive(PrimitiveKind::Short) => "(I)V".into(),
+                    TypeName::Primitive(PrimitiveKind::Long) => "(J)V".into(),
+                    TypeName::Primitive(PrimitiveKind::Float) => "(F)V".into(),
+                    TypeName::Primitive(PrimitiveKind::Double) => "(D)V".into(),
+                    TypeName::Primitive(PrimitiveKind::Boolean) => "(Z)V".into(),
+                    TypeName::Primitive(PrimitiveKind::Char) => "(C)V".into(),
+                    TypeName::Class(name)
+                        if name == "String"
+                            || name == "java.lang.String"
+                            || name == "java/lang/String" =>
+                    {
+                        "(Ljava/lang/String;)V".into()
+                    }
+                    _ => "(Ljava/lang/Object;)V".into(),
+                }
+            }
         }
     }
 
     fn infer_append_descriptor(&self, arg: &CExpr) -> String {
-        match arg {
-            CExpr::StringLiteral(_) => {
+        let ty = self.infer_expr_type(arg);
+        match &ty {
+            TypeName::Primitive(PrimitiveKind::Int)
+            | TypeName::Primitive(PrimitiveKind::Byte)
+            | TypeName::Primitive(PrimitiveKind::Short) => "(I)Ljava/lang/StringBuilder;".into(),
+            TypeName::Primitive(PrimitiveKind::Long) => "(J)Ljava/lang/StringBuilder;".into(),
+            TypeName::Primitive(PrimitiveKind::Float) => "(F)Ljava/lang/StringBuilder;".into(),
+            TypeName::Primitive(PrimitiveKind::Double) => "(D)Ljava/lang/StringBuilder;".into(),
+            TypeName::Primitive(PrimitiveKind::Boolean) => "(Z)Ljava/lang/StringBuilder;".into(),
+            TypeName::Primitive(PrimitiveKind::Char) => "(C)Ljava/lang/StringBuilder;".into(),
+            TypeName::Class(name)
+                if name == "String"
+                    || name == "java.lang.String"
+                    || name == "java/lang/String" =>
+            {
                 "(Ljava/lang/String;)Ljava/lang/StringBuilder;".into()
-            }
-            CExpr::IntLiteral(_) => "(I)Ljava/lang/StringBuilder;".into(),
-            CExpr::CharLiteral(_) => "(C)Ljava/lang/StringBuilder;".into(),
-            CExpr::Ident(name) => {
-                if let Some((_, ty)) = self.locals.find(name) {
-                    match ty {
-                        TypeName::Primitive(PrimitiveKind::Int) => {
-                            return "(I)Ljava/lang/StringBuilder;".into()
-                        }
-                        TypeName::Primitive(PrimitiveKind::Long) => {
-                            return "(J)Ljava/lang/StringBuilder;".into()
-                        }
-                        TypeName::Primitive(PrimitiveKind::Float) => {
-                            return "(F)Ljava/lang/StringBuilder;".into()
-                        }
-                        TypeName::Primitive(PrimitiveKind::Double) => {
-                            return "(D)Ljava/lang/StringBuilder;".into()
-                        }
-                        TypeName::Primitive(PrimitiveKind::Char) => {
-                            return "(C)Ljava/lang/StringBuilder;".into()
-                        }
-                        TypeName::Class(name)
-                            if name == "String" || name == "java.lang.String" =>
-                        {
-                            return "(Ljava/lang/String;)Ljava/lang/StringBuilder;".into()
-                        }
-                        _ => {}
-                    }
-                }
-                "(Ljava/lang/Object;)Ljava/lang/StringBuilder;".into()
             }
             _ => "(Ljava/lang/Object;)Ljava/lang/StringBuilder;".into(),
         }
@@ -2080,6 +3423,123 @@ impl<'a> CodeGenerator<'a> {
             }
             _ => "Ljava/lang/Object;".into(),
         }
+    }
+
+    /// Infer a method descriptor from argument types and method name heuristics.
+    /// Used as fallback when the method isn't found in the constant pool.
+    fn infer_method_descriptor(&self, method_name: &str, args: &[CExpr]) -> String {
+        // Well-known collection/generic methods with fixed descriptors (type-erased signatures)
+        match (method_name, args.len()) {
+            ("add", 1) => return "(Ljava/lang/Object;)Z".into(),
+            ("add", 2) => return "(ILjava/lang/Object;)V".into(),
+            ("get", 1) => return "(I)Ljava/lang/Object;".into(),
+            ("set", 2) => return "(ILjava/lang/Object;)Ljava/lang/Object;".into(),
+            ("remove", 1) => return "(Ljava/lang/Object;)Z".into(),
+            ("contains", 1) => return "(Ljava/lang/Object;)Z".into(),
+            ("put", 2) => return "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;".into(),
+            ("containsKey", 1) => return "(Ljava/lang/Object;)Z".into(),
+            ("containsValue", 1) => return "(Ljava/lang/Object;)Z".into(),
+            ("size", 0) => return "()I".into(),
+            ("isEmpty", 0) => return "()Z".into(),
+            ("clear", 0) => return "()V".into(),
+            ("iterator", 0) => return "()Ljava/util/Iterator;".into(),
+            ("hasNext", 0) => return "()Z".into(),
+            ("next", 0) => return "()Ljava/lang/Object;".into(),
+            ("offer", 1) => return "(Ljava/lang/Object;)Z".into(),
+            _ => {}
+        }
+
+        // Generic fallback: infer from arg types
+        let mut desc = String::from("(");
+        for arg in args {
+            desc.push_str(&self.infer_arg_descriptor(arg));
+        }
+        desc.push(')');
+
+        // Heuristic return type based on well-known method names
+        let ret = match method_name {
+            "size" | "length" | "indexOf" | "lastIndexOf" | "compareTo"
+            | "read" | "intValue" | "ordinal" | "hashCode" => "I",
+            "isEmpty" | "contains" | "containsKey" | "containsValue"
+            | "hasNext" | "hasPrevious" => "Z",
+            "longValue" => "J",
+            "floatValue" => "F",
+            "doubleValue" => "D",
+            "charAt" => "C",
+            _ => "Ljava/lang/Object;",
+        };
+        desc.push_str(ret);
+        desc
+    }
+
+    /// Check if the constant pool has a FieldRef for the given class and field.
+    fn has_field_ref_for_class(&self, class_name: &str, field_name: &str) -> bool {
+        use crate::constant_info::ConstantInfo;
+        let pool = &self.class_file.const_pool;
+        for entry in pool.iter() {
+            if let ConstantInfo::FieldRef(r) = entry {
+                if let ConstantInfo::Class(c) = &pool[(r.class_index - 1) as usize] {
+                    if let Some(cn) = self.class_file.get_utf8(c.name_index) {
+                        if cn == class_name {
+                            if let ConstantInfo::NameAndType(nat) =
+                                &pool[(r.name_and_type_index - 1) as usize]
+                            {
+                                if let Some(name) = self.class_file.get_utf8(nat.name_index) {
+                                    if name == field_name {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a class is a known interface or has InterfaceMethodRef entries in the pool.
+    fn is_interface_method(&self, class_name: &str, method_name: &str) -> bool {
+        // Well-known JDK interfaces
+        const KNOWN_INTERFACES: &[&str] = &[
+            "java/util/List", "java/util/Map", "java/util/Set",
+            "java/util/Collection", "java/util/Iterator", "java/util/Iterable",
+            "java/util/Enumeration", "java/util/Comparator", "java/util/Deque",
+            "java/util/Queue", "java/util/SortedMap", "java/util/SortedSet",
+            "java/util/NavigableMap", "java/util/NavigableSet",
+            "java/util/concurrent/Callable", "java/util/concurrent/Future",
+            "java/util/concurrent/BlockingQueue", "java/util/concurrent/BlockingDeque",
+            "java/lang/Runnable", "java/lang/Comparable", "java/lang/CharSequence",
+            "java/lang/Appendable", "java/lang/AutoCloseable", "java/lang/Closeable",
+            "java/io/Closeable", "java/io/Serializable", "java/io/Flushable",
+        ];
+        if KNOWN_INTERFACES.contains(&class_name) {
+            return true;
+        }
+
+        // Check the constant pool for InterfaceMethodRef entries matching this class+method
+        use crate::constant_info::ConstantInfo;
+        let pool = &self.class_file.const_pool;
+        for entry in pool.iter() {
+            if let ConstantInfo::InterfaceMethodRef(r) = entry {
+                if let ConstantInfo::Class(c) = &pool[(r.class_index - 1) as usize] {
+                    if let Some(cn) = self.class_file.get_utf8(c.name_index) {
+                        if cn == class_name {
+                            if let ConstantInfo::NameAndType(nat) =
+                                &pool[(r.name_and_type_index - 1) as usize]
+                            {
+                                if let Some(name) = self.class_file.get_utf8(nat.name_index) {
+                                    if name == method_name {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn find_field_descriptor_in_pool(
@@ -2275,6 +3735,28 @@ fn descriptor_to_internal(desc: &str) -> Result<String, CompileError> {
     }
 }
 
+/// Convert a field descriptor string to a TypeName.
+fn descriptor_to_type(desc: &str) -> TypeName {
+    match desc {
+        "I" => TypeName::Primitive(PrimitiveKind::Int),
+        "J" => TypeName::Primitive(PrimitiveKind::Long),
+        "F" => TypeName::Primitive(PrimitiveKind::Float),
+        "D" => TypeName::Primitive(PrimitiveKind::Double),
+        "Z" => TypeName::Primitive(PrimitiveKind::Boolean),
+        "B" => TypeName::Primitive(PrimitiveKind::Byte),
+        "C" => TypeName::Primitive(PrimitiveKind::Char),
+        "S" => TypeName::Primitive(PrimitiveKind::Short),
+        "V" => TypeName::Primitive(PrimitiveKind::Void),
+        _ if desc.starts_with('L') && desc.ends_with(';') => {
+            TypeName::Class(desc[1..desc.len() - 1].to_string())
+        }
+        _ if desc.starts_with('[') => {
+            TypeName::Array(Box::new(descriptor_to_type(&desc[1..])))
+        }
+        _ => TypeName::Class("java/lang/Object".into()),
+    }
+}
+
 fn jvm_type_to_type_name(jvm_ty: &JvmType) -> TypeName {
     match jvm_ty {
         JvmType::Int => TypeName::Primitive(PrimitiveKind::Int),
@@ -2346,7 +3828,32 @@ fn type_name_to_vtype(ty: &TypeName) -> VType {
     }
 }
 
-fn jvm_type_to_vtype(jvm_ty: &JvmType) -> VType {
+/// Resolve a TypeName to a VType, using the class file to get or create constant pool entries.
+fn type_name_to_vtype_resolved(ty: &TypeName, class_file: &mut ClassFile) -> VType {
+    match ty {
+        TypeName::Primitive(kind) => match kind {
+            PrimitiveKind::Int | PrimitiveKind::Boolean | PrimitiveKind::Byte
+            | PrimitiveKind::Char | PrimitiveKind::Short => VType::Integer,
+            PrimitiveKind::Long => VType::Long,
+            PrimitiveKind::Float => VType::Float,
+            PrimitiveKind::Double => VType::Double,
+            PrimitiveKind::Void => VType::Top,
+        },
+        TypeName::Class(name) => {
+            let internal = resolve_class_name(name);
+            let idx = class_file.get_or_add_class(&internal);
+            VType::Object(idx)
+        }
+        TypeName::Array(_) => {
+            let desc = type_name_to_descriptor(ty);
+            let idx = class_file.get_or_add_class(&desc);
+            VType::Object(idx)
+        }
+    }
+}
+
+/// Resolve a JvmType to a VType, using the class file to get or create constant pool entries.
+fn jvm_type_to_vtype_resolved(jvm_ty: &JvmType, class_file: &mut ClassFile) -> VType {
     match jvm_ty {
         JvmType::Int | JvmType::Boolean | JvmType::Byte | JvmType::Char | JvmType::Short => {
             VType::Integer
@@ -2355,8 +3862,53 @@ fn jvm_type_to_vtype(jvm_ty: &JvmType) -> VType {
         JvmType::Float => VType::Float,
         JvmType::Double => VType::Double,
         JvmType::Void => VType::Top,
-        JvmType::Reference(_) | JvmType::Array(_) | JvmType::Null | JvmType::Unknown => {
-            VType::Null
+        JvmType::Reference(name) => {
+            let idx = class_file.get_or_add_class(name);
+            VType::Object(idx)
         }
+        JvmType::Array(_) => {
+            let ty = jvm_type_to_type_name(jvm_ty);
+            let desc = type_name_to_descriptor(&ty);
+            let idx = class_file.get_or_add_class(&desc);
+            VType::Object(idx)
+        }
+        JvmType::Null | JvmType::Unknown => VType::Null,
+    }
+}
+
+fn is_var_sentinel(ty: &TypeName) -> bool {
+    matches!(ty, TypeName::Class(name) if name == "__var__")
+}
+
+fn is_string_type(ty: &TypeName) -> bool {
+    matches!(ty, TypeName::Class(name) if name == "String" || name == "java.lang.String" || name == "java/lang/String")
+}
+
+/// Java numeric widening rank: Int(0) < Long(1) < Float(2) < Double(3).
+fn numeric_rank(ty: &TypeName) -> u8 {
+    match ty {
+        TypeName::Primitive(PrimitiveKind::Double) => 3,
+        TypeName::Primitive(PrimitiveKind::Float) => 2,
+        TypeName::Primitive(PrimitiveKind::Long) => 1,
+        _ => 0, // int and sub-int types
+    }
+}
+
+/// Compute the `count` argument for invokeinterface: 1 (objectref) + sum of arg slot widths.
+fn compute_invokeinterface_count(descriptor: &str) -> u8 {
+    let (params, _) = parse_method_descriptor(descriptor).unwrap_or((Vec::new(), JvmType::Void));
+    let mut count: u8 = 1; // objectref
+    for param in &params {
+        count += if param.is_wide() { 2 } else { 1 };
+    }
+    count
+}
+
+/// Return the wider of two numeric types per Java widening rules.
+fn promote_numeric_type(a: &TypeName, b: &TypeName) -> TypeName {
+    if numeric_rank(a) >= numeric_rank(b) {
+        a.clone()
+    } else {
+        b.clone()
     }
 }

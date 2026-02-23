@@ -32,6 +32,8 @@ pub enum Token {
     Null,
     True,
     False,
+    Synchronized,
+    Var,
 
     // Primitive type keywords
     KwInt,
@@ -80,6 +82,9 @@ pub enum Token {
     GtGtGtEq,
     PlusPlus,
     MinusMinus,
+
+    Arrow,
+    ColonColon,
 
     // Delimiters
     LParen,
@@ -217,7 +222,11 @@ impl Lexer {
             ',' => { self.advance(); Token::Comma }
             '.' => { self.advance(); Token::Dot }
             '?' => { self.advance(); Token::Question }
-            ':' => { self.advance(); Token::Colon }
+            ':' => {
+                self.advance();
+                if self.peek() == Some(':') { self.advance(); Token::ColonColon }
+                else { Token::Colon }
+            }
             '~' => { self.advance(); Token::Tilde }
             '+' => {
                 self.advance();
@@ -229,6 +238,7 @@ impl Lexer {
                 self.advance();
                 if self.peek() == Some('-') { self.advance(); Token::MinusMinus }
                 else if self.peek() == Some('=') { self.advance(); Token::MinusEq }
+                else if self.peek() == Some('>') { self.advance(); Token::Arrow }
                 else { Token::Minus }
             }
             '*' => {
@@ -482,6 +492,8 @@ impl Lexer {
             "null" => Token::Null,
             "true" => Token::True,
             "false" => Token::False,
+            "synchronized" => Token::Synchronized,
+            "var" => Token::Var,
             "int" => Token::KwInt,
             "long" => Token::KwLong,
             "float" => Token::KwFloat,

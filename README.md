@@ -31,6 +31,9 @@ classfile-parser = { version = "~0.3", features = ["spring-utils"] }
 
 # Java-to-bytecode compiler for patching method bodies (includes decompile)
 classfile-parser = { version = "~0.3", features = ["compile"] }
+
+# Patch methods inside JAR files (includes compile + jar-utils)
+classfile-parser = { version = "~0.3", features = ["jar-patch"] }
 ```
 
 ## Usage
@@ -225,6 +228,62 @@ A full working example is at [`examples/compile_patch.rs`](examples/compile_patc
 cargo run --example compile_patch --features compile
 ```
 
+### Patching methods inside JAR files
+
+Requires the `jar-patch` feature (which enables both `compile` and `jar-utils`). Patch method bodies directly inside a JAR without extracting or recompiling — no `javac` needed.
+
+Patch a single method with `patch_jar_method!`:
+
+```rust
+use classfile_parser::jar_utils::JarFile;
+use classfile_parser::patch_jar_method;
+
+fn main() {
+    let mut jar = JarFile::open("app.jar").unwrap();
+
+    patch_jar_method!(jar, "com/example/Main.class", "main", r#"{
+        System.out.println("patched!");
+    }"#).unwrap();
+
+    jar.save("app-patched.jar").unwrap();
+}
+```
+
+Use `patch_jar!` to batch patches across multiple classes — each class is parsed once, all its methods are patched, and the class is written back once:
+
+```rust
+use classfile_parser::jar_utils::JarFile;
+use classfile_parser::patch_jar;
+
+fn main() {
+    let mut jar = JarFile::open("app.jar").unwrap();
+
+    patch_jar!(jar, {
+        "com/example/Main.class" => {
+            "main"   => r#"{ System.out.println("patched main"); }"#,
+            "helper" => r#"{ return 42; }"#,
+        },
+        "com/example/Util.class" => {
+            "compute" => r#"{ return 0; }"#,
+        },
+    }).unwrap();
+
+    jar.save("app-patched.jar").unwrap();
+}
+```
+
+All JAR patching macros generate a StackMapTable by default. Pass `no_verify` to skip:
+
+```rust
+patch_jar_method!(jar, "Main.class", "main", r#"{ return; }"#, no_verify).unwrap();
+```
+
+A full working example is at [`examples/jar_patch.rs`](examples/jar_patch.rs):
+
+```sh
+cargo run --example jar_patch --features jar-patch
+```
+
 ### Spring Boot fat JARs
 
 Requires the `spring-utils` feature.
@@ -355,3 +414,7 @@ fn main() {
   - [x] Object creation, method calls, field access, arrays, casts, instanceof, ternary
   - [x] StackMapTable generation for full JVM bytecode verification
   - [x] Method body patching (`compile_method_body`, `patch_method!`, `patch_methods!`)
+- [x] JAR patching (optional `jar-patch` feature)
+  - [x] Patch methods directly inside JAR archives
+  - [x] Batch by class — parse once, patch N methods, write once
+  - [x] `patch_jar_method!`, `patch_jar_class!`, `patch_jar!` macros

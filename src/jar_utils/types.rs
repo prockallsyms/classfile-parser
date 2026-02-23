@@ -81,6 +81,13 @@ pub struct JarFile {
 }
 
 impl JarFile {
+    /// Create an empty JAR.
+    pub fn new() -> Self {
+        JarFile {
+            entries: BTreeMap::new(),
+        }
+    }
+
     // -- Reading --
 
     /// Read a JAR from any reader.
