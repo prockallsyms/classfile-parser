@@ -20,7 +20,7 @@ compile = ["decompile"]
 jar-utils = ["dep:zip"]
 jar-patch = ["compile", "jar-utils"]
 spring-utils = ["jar-utils"]
-tui-example = ["jar-utils", "spring-utils", "decompile", "dep:ratatui", "dep:crossterm", "dep:tui-textarea"]
+tui-example = ["jar-utils", "spring-utils", "compile", "dep:ratatui", "dep:crossterm", "dep:tui-textarea"]
 
 [dependencies]
 bitflags = "^2.3"

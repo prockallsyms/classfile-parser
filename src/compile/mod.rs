@@ -52,9 +52,25 @@ impl fmt::Display for CompileError {
 
 impl std::error::Error for CompileError {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InsertMode {
+    /// Replace the entire method body (default).
+    Replace,
+    /// Insert compiled code at the beginning, preserving the original body.
+    Prepend,
+}
+
+impl Default for InsertMode {
+    fn default() -> Self {
+        InsertMode::Replace
+    }
+}
+
+#[derive(Clone)]
 pub struct CompileOptions {
     pub strip_stack_map_table: bool,
     pub generate_stack_map_table: bool,
+    pub insert_mode: InsertMode,
 }
 
 impl Default for CompileOptions {
@@ -62,6 +78,7 @@ impl Default for CompileOptions {
         CompileOptions {
             strip_stack_map_table: false,
             generate_stack_map_table: true,
+            insert_mode: InsertMode::Replace,
         }
     }
 }
@@ -101,7 +118,7 @@ pub fn generate_bytecode_with_options(
     generate_stack_map_table: bool,
 ) -> Result<GeneratedCode, CompileError> {
     let mut codegen =
-        CodeGenerator::new_with_options(class_file, is_static, method_descriptor, generate_stack_map_table)?;
+        CodeGenerator::new_with_options(class_file, is_static, method_descriptor, generate_stack_map_table, &[])?;
     codegen.generate_body(stmts)?;
     codegen.finish()
 }
@@ -114,6 +131,22 @@ pub fn compile_method_body(
     options: &CompileOptions,
 ) -> Result<(), CompileError> {
     patch::compile_method_body_impl(source, class_file, method_name, options)
+}
+
+/// Compile Java source and prepend it to an existing method body.
+///
+/// The compiled code is inserted before the original instructions.
+/// Trailing return instructions are stripped so the prepended code
+/// falls through to the original body.
+pub fn prepend_method_body(
+    source: &str,
+    class_file: &mut ClassFile,
+    method_name: &str,
+    options: &CompileOptions,
+) -> Result<(), CompileError> {
+    let mut opts = options.clone();
+    opts.insert_mode = InsertMode::Prepend;
+    patch::compile_method_body_impl(source, class_file, method_name, &opts)
 }
 
 /// Compile and patch a single method body in a class file.
@@ -189,4 +222,39 @@ macro_rules! patch_methods {
             Ok(())
         })()
     }};
+}
+
+/// Prepend compiled Java source to the beginning of a method body.
+///
+/// The original method code is preserved; the new code runs first and
+/// falls through to the original instructions.
+///
+/// ```ignore
+/// prepend_method!(class_file, "main", r#"{ System.out.println("entering main"); }"#)?;
+/// ```
+#[macro_export]
+macro_rules! prepend_method {
+    ($class_file:expr, $method:expr, $source:expr) => {
+        $crate::compile::prepend_method_body(
+            $source,
+            &mut $class_file,
+            $method,
+            &$crate::compile::CompileOptions {
+                generate_stack_map_table: true,
+                insert_mode: $crate::compile::InsertMode::Prepend,
+                ..$crate::compile::CompileOptions::default()
+            },
+        )
+    };
+    ($class_file:expr, $method:expr, $source:expr, no_verify) => {
+        $crate::compile::prepend_method_body(
+            $source,
+            &mut $class_file,
+            $method,
+            &$crate::compile::CompileOptions {
+                insert_mode: $crate::compile::InsertMode::Prepend,
+                ..$crate::compile::CompileOptions::default()
+            },
+        )
+    };
 }

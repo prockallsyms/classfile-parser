@@ -1,12 +1,220 @@
-use crate::attribute_info::{AttributeInfo, AttributeInfoVariant, CodeAttribute};
+use crate::attribute_info::{
+    AttributeInfo, AttributeInfoVariant, CodeAttribute, StackMapFrame, StackMapFrameInner,
+    StackMapTableAttribute,
+};
+use crate::code_attribute::Instruction;
 use crate::constant_info::ConstantInfo;
+use crate::decompile::descriptor::parse_method_descriptor;
 use crate::method_info::MethodAccessFlags;
 use crate::ClassFile;
 
-use super::codegen::CodeGenerator;
+use super::codegen::{compute_byte_addresses, CodeGenerator};
 use super::lexer::Lexer;
 use super::parser::Parser;
-use super::{CompileError, CompileOptions};
+use super::{CompileError, CompileOptions, InsertMode};
+
+/// Extract parameter names from debug info (MethodParameters or LocalVariableTable).
+///
+/// Returns a Vec with one entry per declared parameter. Each entry is `Some(name)` if
+/// a debug name was found, or `None` otherwise.
+fn extract_param_names(
+    class_file: &ClassFile,
+    method_idx: usize,
+    is_static: bool,
+    method_descriptor: &str,
+) -> Vec<Option<String>> {
+    let (params, _) = match parse_method_descriptor(method_descriptor) {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let param_count = params.len();
+    if param_count == 0 {
+        return vec![];
+    }
+
+    let method = &class_file.methods[method_idx];
+
+    // Try MethodParameters attribute first (method-level, available with javac -parameters)
+    for attr in &method.attributes {
+        if let Some(AttributeInfoVariant::MethodParameters(mp)) = &attr.info_parsed {
+            let mut names = Vec::with_capacity(param_count);
+            for (i, p) in mp.parameters.iter().enumerate() {
+                if i >= param_count {
+                    break;
+                }
+                if p.name_index != 0 {
+                    if let Some(name) = class_file.get_utf8(p.name_index) {
+                        names.push(Some(name.to_string()));
+                        continue;
+                    }
+                }
+                names.push(None);
+            }
+            // Pad if MethodParameters has fewer entries
+            while names.len() < param_count {
+                names.push(None);
+            }
+            return names;
+        }
+    }
+
+    // Fall back to LocalVariableTable (Code sub-attribute, available with javac -g)
+    for attr in &method.attributes {
+        if let Some(AttributeInfoVariant::Code(code)) = &attr.info_parsed {
+            for sub_attr in &code.attributes {
+                if let Some(AttributeInfoVariant::LocalVariableTable(lvt)) = &sub_attr.info_parsed {
+                    // Build a slot→name map for parameter slots
+                    // Parameter slots: if instance method, slot 0 = this, params start at 1
+                    let first_param_slot: u16 = if is_static { 0 } else { 1 };
+                    let mut slot_to_name = std::collections::HashMap::new();
+                    for item in &lvt.items {
+                        // Parameters typically have start_pc == 0
+                        if item.start_pc == 0 {
+                            if let Some(name) = class_file.get_utf8(item.name_index) {
+                                slot_to_name.insert(item.index, name.to_string());
+                            }
+                        }
+                    }
+
+                    // Walk through params computing expected slots
+                    let mut names = Vec::with_capacity(param_count);
+                    let mut slot = first_param_slot;
+                    for param in &params {
+                        names.push(slot_to_name.get(&slot).cloned());
+                        slot += if param.is_wide() { 2 } else { 1 };
+                    }
+                    return names;
+                }
+            }
+        }
+    }
+
+    vec![None; param_count]
+}
+
+/// Strip trailing return instructions from generated code for prepend mode.
+fn strip_trailing_returns(instructions: &mut Vec<Instruction>) {
+    while let Some(last) = instructions.last() {
+        match last {
+            Instruction::Return
+            | Instruction::Ireturn
+            | Instruction::Lreturn
+            | Instruction::Freturn
+            | Instruction::Dreturn
+            | Instruction::Areturn => {
+                instructions.pop();
+            }
+            _ => break,
+        }
+    }
+}
+
+/// Extract the offset_delta from a StackMapFrame.
+fn frame_offset_delta(frame: &StackMapFrame) -> u16 {
+    match &frame.inner {
+        StackMapFrameInner::SameFrame {} => frame.frame_type as u16,
+        StackMapFrameInner::SameLocals1StackItemFrame { .. } => (frame.frame_type - 64) as u16,
+        StackMapFrameInner::SameLocals1StackItemFrameExtended { offset_delta, .. }
+        | StackMapFrameInner::ChopFrame { offset_delta, .. }
+        | StackMapFrameInner::SameFrameExtended { offset_delta, .. }
+        | StackMapFrameInner::AppendFrame { offset_delta, .. }
+        | StackMapFrameInner::FullFrame { offset_delta, .. } => *offset_delta,
+    }
+}
+
+/// Convert StackMapTable frames from delta-encoded to absolute bytecode offsets.
+fn frames_to_absolute(smt: &StackMapTableAttribute) -> Vec<(u32, StackMapFrame)> {
+    let mut result = Vec::new();
+    let mut prev_offset: i64 = -1;
+    for frame in &smt.entries {
+        let delta = frame_offset_delta(frame) as i64;
+        let abs_offset = (prev_offset + delta + 1) as u32;
+        prev_offset = abs_offset as i64;
+        result.push((abs_offset, frame.clone()));
+    }
+    result
+}
+
+/// Re-encode a frame with a new offset_delta, choosing the most compact representation.
+fn reencode_frame_with_delta(frame: &StackMapFrame, new_delta: u16) -> StackMapFrame {
+    match &frame.inner {
+        StackMapFrameInner::SameFrame {} | StackMapFrameInner::SameFrameExtended { .. } => {
+            if new_delta <= 63 {
+                StackMapFrame {
+                    frame_type: new_delta as u8,
+                    inner: StackMapFrameInner::SameFrame {},
+                }
+            } else {
+                StackMapFrame {
+                    frame_type: 251,
+                    inner: StackMapFrameInner::SameFrameExtended {
+                        offset_delta: new_delta,
+                    },
+                }
+            }
+        }
+        StackMapFrameInner::SameLocals1StackItemFrame { stack }
+        | StackMapFrameInner::SameLocals1StackItemFrameExtended { stack, .. } => {
+            if new_delta <= 63 {
+                StackMapFrame {
+                    frame_type: 64 + new_delta as u8,
+                    inner: StackMapFrameInner::SameLocals1StackItemFrame {
+                        stack: stack.clone(),
+                    },
+                }
+            } else {
+                StackMapFrame {
+                    frame_type: 247,
+                    inner: StackMapFrameInner::SameLocals1StackItemFrameExtended {
+                        offset_delta: new_delta,
+                        stack: stack.clone(),
+                    },
+                }
+            }
+        }
+        StackMapFrameInner::ChopFrame { .. } => StackMapFrame {
+            frame_type: frame.frame_type,
+            inner: StackMapFrameInner::ChopFrame {
+                offset_delta: new_delta,
+            },
+        },
+        StackMapFrameInner::AppendFrame { locals, .. } => StackMapFrame {
+            frame_type: frame.frame_type,
+            inner: StackMapFrameInner::AppendFrame {
+                offset_delta: new_delta,
+                locals: locals.clone(),
+            },
+        },
+        StackMapFrameInner::FullFrame {
+            number_of_locals,
+            locals,
+            number_of_stack_items,
+            stack,
+            ..
+        } => StackMapFrame {
+            frame_type: 255,
+            inner: StackMapFrameInner::FullFrame {
+                offset_delta: new_delta,
+                number_of_locals: *number_of_locals,
+                locals: locals.clone(),
+                number_of_stack_items: *number_of_stack_items,
+                stack: stack.clone(),
+            },
+        },
+    }
+}
+
+/// Take frames with absolute offsets, re-compute deltas, and re-encode.
+fn reencode_frames_absolute(frames: &[(u32, StackMapFrame)]) -> Vec<StackMapFrame> {
+    let mut result = Vec::new();
+    let mut prev_offset: i64 = -1;
+    for (abs_offset, frame) in frames {
+        let new_delta = (*abs_offset as i64 - prev_offset - 1) as u16;
+        prev_offset = *abs_offset as i64;
+        result.push(reencode_frame_with_delta(frame, new_delta));
+    }
+    result
+}
 
 /// Compile Java source and replace a method's body in the class file.
 pub fn compile_method_body_impl(
@@ -41,6 +249,9 @@ pub fn compile_method_body_impl(
         })?
         .to_string();
 
+    // Extract parameter names from debug info before mutably borrowing for codegen
+    let param_names = extract_param_names(class_file, method_idx, is_static, &method_descriptor);
+
     // Parse source
     let lexer = Lexer::new(source);
     let tokens = lexer.tokenize()?;
@@ -53,10 +264,27 @@ pub fn compile_method_body_impl(
         is_static,
         &method_descriptor,
         options.generate_stack_map_table,
+        &param_names,
     )?;
     codegen.generate_body(&stmts)?;
     let generated = codegen.finish()?;
 
+    match options.insert_mode {
+        InsertMode::Replace => replace_method_body(class_file, method_idx, generated, options)?,
+        InsertMode::Prepend => prepend_to_method_body(class_file, method_idx, generated, options)?,
+    }
+
+    class_file.sync_counts();
+    Ok(())
+}
+
+/// Replace the entire method body with newly generated bytecode.
+fn replace_method_body(
+    class_file: &mut ClassFile,
+    method_idx: usize,
+    generated: super::GeneratedCode,
+    options: &CompileOptions,
+) -> Result<(), CompileError> {
     // Build StackMapTable sub-attribute if generated
     let smt_sub_attr = if options.generate_stack_map_table {
         if let Some(smt) = generated.stack_map_table {
@@ -161,6 +389,140 @@ pub fn compile_method_body_impl(
             class_file.methods[method_idx].attributes.len() as u16;
     }
 
-    class_file.sync_counts();
+    Ok(())
+}
+
+/// Prepend newly generated bytecode before the existing method body.
+fn prepend_to_method_body(
+    class_file: &mut ClassFile,
+    method_idx: usize,
+    mut generated: super::GeneratedCode,
+    options: &CompileOptions,
+) -> Result<(), CompileError> {
+    // Strip trailing return so prepended code falls through to original
+    strip_trailing_returns(&mut generated.instructions);
+    if generated.instructions.is_empty() {
+        return Ok(()); // Nothing to prepend
+    }
+
+    // Find existing Code attribute (required for prepend)
+    let attr_idx = class_file.methods[method_idx]
+        .attributes
+        .iter()
+        .position(|a| matches!(a.info_parsed, Some(AttributeInfoVariant::Code(_))))
+        .ok_or_else(|| CompileError::CodegenError {
+            message: "method has no Code attribute to prepend to".into(),
+        })?;
+
+    // Pre-resolve StackMapTable name index before taking mutable borrow on code
+    let smt_name_idx = if options.generate_stack_map_table {
+        Some(class_file.get_or_add_utf8("StackMapTable"))
+    } else {
+        None
+    };
+
+    let code = match &mut class_file.methods[method_idx].attributes[attr_idx].info_parsed {
+        Some(AttributeInfoVariant::Code(c)) => c,
+        _ => unreachable!(),
+    };
+
+    // Concatenate: new instructions ++ old instructions
+    let old_instructions = std::mem::take(&mut code.code);
+    let new_count = generated.instructions.len();
+    let mut combined = generated.instructions;
+    combined.extend(old_instructions);
+
+    // Compute byte addresses for the combined stream
+    let addresses = compute_byte_addresses(&combined);
+    let prepend_byte_size = if new_count < addresses.len() {
+        addresses[new_count]
+    } else {
+        // All instructions are new (shouldn't happen, but be safe)
+        *addresses.last().unwrap_or(&0)
+    };
+
+    // Shift existing exception table entries by prepend_byte_size
+    for entry in &mut code.exception_table {
+        entry.start_pc += prepend_byte_size as u16;
+        entry.end_pc += prepend_byte_size as u16;
+        entry.handler_pc += prepend_byte_size as u16;
+    }
+
+    // Merge exception tables: new first, then shifted old
+    let mut merged_exceptions = generated.exception_table;
+    merged_exceptions.append(&mut code.exception_table);
+
+    // Handle StackMapTable merging
+    let old_smt = code.attributes.iter().find_map(|a| match &a.info_parsed {
+        Some(AttributeInfoVariant::StackMapTable(smt)) => Some(smt.clone()),
+        _ => None,
+    });
+
+    // Strip old StackMapTable and debug attributes
+    code.attributes.retain(|a| {
+        !matches!(
+            a.info_parsed,
+            Some(AttributeInfoVariant::StackMapTable(_))
+                | Some(AttributeInfoVariant::LineNumberTable(_))
+                | Some(AttributeInfoVariant::LocalVariableTable(_))
+                | Some(AttributeInfoVariant::LocalVariableTypeTable(_))
+        )
+    });
+
+    // Build merged StackMapTable
+    if options.generate_stack_map_table {
+        let mut all_frames: Vec<(u32, StackMapFrame)> = Vec::new();
+
+        // Add new code's frames (already at correct absolute offsets)
+        if let Some(new_smt) = &generated.stack_map_table {
+            all_frames.extend(frames_to_absolute(new_smt));
+        }
+
+        // Add shifted old frames
+        if let Some(old_smt) = &old_smt {
+            for (offset, frame) in frames_to_absolute(old_smt) {
+                all_frames.push((offset + prepend_byte_size, frame));
+            }
+        }
+
+        if !all_frames.is_empty() {
+            all_frames.sort_by_key(|(offset, _)| *offset);
+            let reencoded = reencode_frames_absolute(&all_frames);
+
+            let smt = StackMapTableAttribute {
+                number_of_entries: reencoded.len() as u16,
+                entries: reencoded,
+            };
+
+            let mut smt_attr = AttributeInfo {
+                attribute_name_index: smt_name_idx.unwrap(),
+                attribute_length: 0,
+                info: vec![],
+                info_parsed: Some(AttributeInfoVariant::StackMapTable(smt)),
+            };
+            smt_attr
+                .sync_from_parsed()
+                .map_err(|e| CompileError::CodegenError {
+                    message: format!("sync_from_parsed for StackMapTable failed: {}", e),
+                })?;
+            code.attributes.push(smt_attr);
+        }
+    }
+
+    // Update CodeAttribute
+    code.code = combined;
+    code.max_stack = std::cmp::max(generated.max_stack, code.max_stack);
+    code.max_locals = std::cmp::max(generated.max_locals, code.max_locals);
+    code.exception_table = merged_exceptions;
+    code.exception_table_length = code.exception_table.len() as u16;
+    code.attributes_count = code.attributes.len() as u16;
+
+    // Sync
+    class_file.methods[method_idx].attributes[attr_idx]
+        .sync_from_parsed()
+        .map_err(|e| CompileError::CodegenError {
+            message: format!("sync_from_parsed failed: {}", e),
+        })?;
+
     Ok(())
 }

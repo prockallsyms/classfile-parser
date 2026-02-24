@@ -16,7 +16,11 @@ pub fn compute_max_stack(instructions: &[Instruction]) -> u16 {
         }
     }
 
-    // Add safety margin for branch merge points
+    // Safety margin of +2: the linear walk doesn't model control flow, so it can
+    // underestimate the stack at branch merge points. For example, an exception handler
+    // pushes one value (the exception) that the linear walk doesn't see, and certain
+    // patterns (dup + method call) can temporarily exceed the tracked depth. The +2
+    // covers these cases conservatively without requiring a full CFG analysis.
     let result = max_depth + 2;
     result.max(1) as u16
 }

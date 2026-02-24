@@ -189,11 +189,16 @@ impl ClassFile {
     /// Call this after adding or removing entries from const_pool, interfaces,
     /// fields, methods, or attributes.
     pub fn sync_counts(&mut self) {
-        self.const_pool_size = (self.const_pool.len() + 1) as u16;
-        self.interfaces_count = self.interfaces.len() as u16;
-        self.fields_count = self.fields.len() as u16;
-        self.methods_count = self.methods.len() as u16;
-        self.attributes_count = self.attributes.len() as u16;
+        fn checked_u16(val: usize, field: &str) -> u16 {
+            u16::try_from(val).unwrap_or_else(|_| {
+                panic!("{} count {} exceeds u16::MAX", field, val)
+            })
+        }
+        self.const_pool_size = checked_u16(self.const_pool.len() + 1, "const_pool");
+        self.interfaces_count = checked_u16(self.interfaces.len(), "interfaces");
+        self.fields_count = checked_u16(self.fields.len(), "fields");
+        self.methods_count = checked_u16(self.methods.len(), "methods");
+        self.attributes_count = checked_u16(self.attributes.len(), "attributes");
     }
 
     /// Look up a UTF-8 constant pool entry by its 1-based index.

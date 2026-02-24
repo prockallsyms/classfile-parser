@@ -67,190 +67,77 @@ pub struct AttributeInfo {
 
 impl InterpretInner for AttributeInfo {
     fn interpret_inner(&mut self, constant_pool: &Vec<ConstantInfo>) {
-        assert!(self.info_parsed.is_none(), "parsing has already happened");
+        if self.info_parsed.is_some() {
+            return; // already parsed
+        }
 
-        assert_eq!(
-            self.info.len(),
-            self.attribute_length as usize,
-            "mismatched attr length and info vec length! {} != {}",
-            self.info.len(),
-            self.attribute_length
-        );
+        if self.info.len() != self.attribute_length as usize {
+            return; // malformed: length mismatch, leave as raw bytes
+        }
 
-        match &constant_pool[(self.attribute_name_index - 1) as usize] {
-            ConstantInfo::Utf8(Utf8Constant {
-                utf8_string: attr_name,
-            }) => {
-                self.info_parsed = match attr_name.as_str() {
-                    "ConstantValue" => {
-                        let c =
-                            ConstantValueAttribute::read_be(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::ConstantValue(c))
-                    }
-                    "Code" => {
-                        let mut cursor = Cursor::new(&mut self.info);
-                        let c = CodeAttribute::read(&mut cursor);
-                        if let Err(binrw::Error::NoVariantMatch { pos }) = c {
-                            dbg!(&cursor);
-                            dbg!(&c);
-                            dbg!(&pos);
-                            None
-                        } else {
-                            let mut code = c.expect("malformed code was read");
-                            for attr in &mut code.attributes {
-                                attr.interpret_inner(constant_pool);
-                            }
-                            Some(AttributeInfoVariant::Code(code))
+        // Bounds-checked constant pool access
+        let idx = self.attribute_name_index.wrapping_sub(1) as usize;
+        let attr_name = match constant_pool.get(idx) {
+            Some(ConstantInfo::Utf8(Utf8Constant { utf8_string })) => utf8_string.clone(),
+            _ => return, // index out of bounds or not UTF-8, leave as raw bytes
+        };
+
+        /// Helper: try to read a binrw type from `info`, returning `None` on failure.
+        macro_rules! try_read {
+            ($ty:ty, $variant:ident) => {
+                <$ty>::read(&mut Cursor::new(&mut self.info))
+                    .ok()
+                    .map(AttributeInfoVariant::$variant)
+            };
+            (be: $ty:ty, $variant:ident) => {
+                <$ty>::read_be(&mut Cursor::new(&mut self.info))
+                    .ok()
+                    .map(AttributeInfoVariant::$variant)
+            };
+        }
+
+        self.info_parsed = match attr_name.as_str() {
+            "ConstantValue" => try_read!(be: ConstantValueAttribute, ConstantValue),
+            "Code" => {
+                match CodeAttribute::read(&mut Cursor::new(&mut self.info)) {
+                    Ok(mut code) => {
+                        for attr in &mut code.attributes {
+                            attr.interpret_inner(constant_pool);
                         }
+                        Some(AttributeInfoVariant::Code(code))
                     }
-                    "StackMapTable" => {
-                        let c =
-                            StackMapTableAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::StackMapTable(c))
-                    }
-                    "BootstrapMethods" => {
-                        let c = BootstrapMethodsAttribute::read(&mut Cursor::new(&mut self.info))
-                            .unwrap();
-                        Some(AttributeInfoVariant::BootstrapMethods(c))
-                    }
-                    "Exceptions" => {
-                        let c =
-                            ExceptionsAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::Exceptions(c))
-                    }
-                    "InnerClasses" => {
-                        let c =
-                            InnerClassesAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::InnerClasses(c))
-                    }
-                    "EnclosingMethod" => {
-                        let c = EnclosingMethodAttribute::read(&mut Cursor::new(&mut self.info))
-                            .unwrap();
-                        Some(AttributeInfoVariant::EnclosingMethod(c))
-                    }
-                    "Synthetic" => {
-                        let c = SyntheticAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::Synthetic(c))
-                    }
-                    "Signature" => {
-                        let c = SignatureAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::Signature(c))
-                    }
-                    "SourceFile" => {
-                        let c =
-                            SourceFileAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::SourceFile(c))
-                    }
-                    "LineNumberTable" => {
-                        let c = LineNumberTableAttribute::read(&mut Cursor::new(&mut self.info))
-                            .unwrap();
-                        Some(AttributeInfoVariant::LineNumberTable(c))
-                    }
-                    "LocalVariableTable" => {
-                        let c = LocalVariableTableAttribute::read(&mut Cursor::new(&mut self.info))
-                            .unwrap();
-                        Some(AttributeInfoVariant::LocalVariableTable(c))
-                    }
-                    "LocalVariableTypeTable" => {
-                        let c =
-                            LocalVariableTypeTableAttribute::read(&mut Cursor::new(&mut self.info))
-                                .unwrap();
-                        Some(AttributeInfoVariant::LocalVariableTypeTable(c))
-                    }
-                    "SourceDebugExtension" => {
-                        let c =
-                            SourceDebugExtensionAttribute::read(&mut Cursor::new(&mut self.info))
-                                .unwrap();
-                        Some(AttributeInfoVariant::SourceDebugExtension(c))
-                    }
-                    "Deprecated" => {
-                        let c =
-                            DeprecatedAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::Deprecated(c))
-                    }
-                    "RuntimeVisibleAnnotations" => {
-                        let c = RuntimeVisibleAnnotationsAttribute::read(&mut Cursor::new(
-                            &mut self.info,
-                        ))
-                        .unwrap();
-                        Some(AttributeInfoVariant::RuntimeVisibleAnnotations(c))
-                    }
-                    "RuntimeInvisibleAnnotations" => {
-                        let c = RuntimeInvisibleAnnotationsAttribute::read(&mut Cursor::new(
-                            &mut self.info,
-                        ))
-                        .unwrap();
-                        Some(AttributeInfoVariant::RuntimeInvisibleAnnotations(c))
-                    }
-                    "RuntimeVisibleParameterAnnotations" => {
-                        let c = RuntimeVisibleParameterAnnotationsAttribute::read(
-                            &mut Cursor::new(&mut self.info),
-                        )
-                        .unwrap();
-                        Some(AttributeInfoVariant::RuntimeVisibleParameterAnnotations(c))
-                    }
-                    "RuntimeInvisibleParameterAnnotations" => {
-                        let c = RuntimeInvisibleParameterAnnotationsAttribute::read(
-                            &mut Cursor::new(&mut self.info),
-                        )
-                        .unwrap();
-                        Some(AttributeInfoVariant::RuntimeInvisibleParameterAnnotations(
-                            c,
-                        ))
-                    }
-                    "RuntimeVisibleTypeAnnotations" => {
-                        let c = RuntimeVisibleTypeAnnotationsAttribute::read(&mut Cursor::new(
-                            &mut self.info,
-                        ))
-                        .unwrap();
-                        Some(AttributeInfoVariant::RuntimeVisibleTypeAnnotations(c))
-                    }
-                    "RuntimeInvisibleTypeAnnotations" => {
-                        let c = RuntimeInvisibleTypeAnnotationsAttribute::read(&mut Cursor::new(
-                            &mut self.info,
-                        ))
-                        .unwrap();
-                        Some(AttributeInfoVariant::RuntimeInvisibleTypeAnnotations(c))
-                    }
-                    "AnnotationDefault" => {
-                        let c = AnnotationDefaultAttribute::read(&mut Cursor::new(&mut self.info))
-                            .unwrap();
-                        Some(AttributeInfoVariant::AnnotationDefault(c))
-                    }
-                    "MethodParameters" => {
-                        let c = MethodParametersAttribute::read(&mut Cursor::new(&mut self.info))
-                            .unwrap();
-                        Some(AttributeInfoVariant::MethodParameters(c))
-                    }
-                    "Module" => {
-                        let c =
-                            ModuleAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::Module(c))
-                    }
-                    "ModulePackages" => {
-                        let c =
-                            ModulePackagesAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::ModulePackages(c))
-                    }
-                    "ModuleMainClass" => {
-                        let c =
-                            ModuleMainClassAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::ModuleMainClass(c))
-                    }
-                    "NestHost" => {
-                        let c =
-                            NestHostAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::NestHost(c))
-                    }
-                    "NestMembers" => {
-                        let c =
-                            NestMembersAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::NestMembers(c))
-                    }
-                    "Record" => {
-                        let c =
-                            RecordAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        let mut record = c;
+                    Err(_) => None,
+                }
+            }
+            "StackMapTable" => try_read!(StackMapTableAttribute, StackMapTable),
+            "BootstrapMethods" => try_read!(BootstrapMethodsAttribute, BootstrapMethods),
+            "Exceptions" => try_read!(ExceptionsAttribute, Exceptions),
+            "InnerClasses" => try_read!(InnerClassesAttribute, InnerClasses),
+            "EnclosingMethod" => try_read!(EnclosingMethodAttribute, EnclosingMethod),
+            "Synthetic" => try_read!(SyntheticAttribute, Synthetic),
+            "Signature" => try_read!(SignatureAttribute, Signature),
+            "SourceFile" => try_read!(SourceFileAttribute, SourceFile),
+            "LineNumberTable" => try_read!(LineNumberTableAttribute, LineNumberTable),
+            "LocalVariableTable" => try_read!(LocalVariableTableAttribute, LocalVariableTable),
+            "LocalVariableTypeTable" => try_read!(LocalVariableTypeTableAttribute, LocalVariableTypeTable),
+            "SourceDebugExtension" => try_read!(SourceDebugExtensionAttribute, SourceDebugExtension),
+            "Deprecated" => try_read!(DeprecatedAttribute, Deprecated),
+            "RuntimeVisibleAnnotations" => try_read!(RuntimeVisibleAnnotationsAttribute, RuntimeVisibleAnnotations),
+            "RuntimeInvisibleAnnotations" => try_read!(RuntimeInvisibleAnnotationsAttribute, RuntimeInvisibleAnnotations),
+            "RuntimeVisibleParameterAnnotations" => try_read!(RuntimeVisibleParameterAnnotationsAttribute, RuntimeVisibleParameterAnnotations),
+            "RuntimeInvisibleParameterAnnotations" => try_read!(RuntimeInvisibleParameterAnnotationsAttribute, RuntimeInvisibleParameterAnnotations),
+            "RuntimeVisibleTypeAnnotations" => try_read!(RuntimeVisibleTypeAnnotationsAttribute, RuntimeVisibleTypeAnnotations),
+            "RuntimeInvisibleTypeAnnotations" => try_read!(RuntimeInvisibleTypeAnnotationsAttribute, RuntimeInvisibleTypeAnnotations),
+            "AnnotationDefault" => try_read!(AnnotationDefaultAttribute, AnnotationDefault),
+            "MethodParameters" => try_read!(MethodParametersAttribute, MethodParameters),
+            "Module" => try_read!(ModuleAttribute, Module),
+            "ModulePackages" => try_read!(ModulePackagesAttribute, ModulePackages),
+            "ModuleMainClass" => try_read!(ModuleMainClassAttribute, ModuleMainClass),
+            "NestHost" => try_read!(NestHostAttribute, NestHost),
+            "NestMembers" => try_read!(NestMembersAttribute, NestMembers),
+            "Record" => {
+                match RecordAttribute::read(&mut Cursor::new(&mut self.info)) {
+                    Ok(mut record) => {
                         for component in &mut record.components {
                             for attr in &mut component.attributes {
                                 attr.interpret_inner(constant_pool);
@@ -258,18 +145,12 @@ impl InterpretInner for AttributeInfo {
                         }
                         Some(AttributeInfoVariant::Record(record))
                     }
-                    "PermittedSubclasses" => {
-                        let c =
-                            PermittedSubclassesAttribute::read(&mut Cursor::new(&mut self.info)).unwrap();
-                        Some(AttributeInfoVariant::PermittedSubclasses(c))
-                    }
-                    unhandled => Some(AttributeInfoVariant::Unknown(String::from(unhandled))),
+                    Err(_) => None,
                 }
             }
-            unhandled => panic!(
-                "attribute info name index points to non-UTF8 constant value in the constant_pool:\n{:?}", unhandled
-            ),
-        }
+            "PermittedSubclasses" => try_read!(PermittedSubclassesAttribute, PermittedSubclasses),
+            unhandled => Some(AttributeInfoVariant::Unknown(String::from(unhandled))),
+        };
     }
 }
 

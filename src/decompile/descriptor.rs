@@ -24,6 +24,24 @@ impl JvmType {
         matches!(self, JvmType::Long | JvmType::Double)
     }
 
+    /// Returns the JVM descriptor string for this type.
+    pub fn to_descriptor(&self) -> String {
+        match self {
+            JvmType::Int => "I".into(),
+            JvmType::Long => "J".into(),
+            JvmType::Float => "F".into(),
+            JvmType::Double => "D".into(),
+            JvmType::Byte => "B".into(),
+            JvmType::Char => "C".into(),
+            JvmType::Short => "S".into(),
+            JvmType::Boolean => "Z".into(),
+            JvmType::Void => "V".into(),
+            JvmType::Reference(name) => format!("L{};", name),
+            JvmType::Array(inner) => format!("[{}", inner.to_descriptor()),
+            JvmType::Null | JvmType::Unknown => "Ljava/lang/Object;".into(),
+        }
+    }
+
     /// Returns the simple (unqualified) name for display.
     pub fn simple_name(&self) -> String {
         match self {

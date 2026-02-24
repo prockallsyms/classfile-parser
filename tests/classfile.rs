@@ -169,3 +169,161 @@ fn test_round_trip() {
         "written class file bytes differ from original"
     );
 }
+
+/// Verify that sync_from_parsed() on unmodified Code attributes produces identical bytes.
+#[test]
+fn test_sync_from_parsed_idempotent() {
+    // Note: UnicodeStrings excluded — it contains invalid UTF-8 (unpaired surrogates)
+    // that get normalized to U+FFFD during parsing, so round-trip is not byte-identical.
+    for class_name in &[
+        "BasicClass",
+        "Factorial",
+        "HelloWorld",
+        "Instructions",
+    ] {
+        let path = format!("java-assets/compiled-classes/{}.class", class_name);
+        let mut original_bytes = Vec::new();
+        File::open(&path)
+            .unwrap_or_else(|_| panic!("failed to open {}", path))
+            .read_to_end(&mut original_bytes)
+            .unwrap();
+
+        let mut class_file =
+            ClassFile::read(&mut Cursor::new(&original_bytes)).expect("failed to parse");
+
+        // Sync all Code attributes without modifying them
+        for method in &mut class_file.methods {
+            for attr in &mut method.attributes {
+                if matches!(attr.info_parsed, Some(AttributeInfoVariant::Code(_))) {
+                    attr.sync_from_parsed().expect("sync_from_parsed failed");
+                }
+            }
+        }
+
+        let mut written_bytes = Cursor::new(Vec::new());
+        class_file.write(&mut written_bytes).expect("failed to write");
+        let written_bytes = written_bytes.into_inner();
+
+        assert_eq!(
+            original_bytes, written_bytes,
+            "{}: sync_from_parsed on unmodified Code changed the output",
+            class_name
+        );
+    }
+}
+
+/// Verify that modifying an instruction survives write → re-read.
+#[test]
+fn test_mutation_round_trip_instruction() {
+    let mut original_bytes = Vec::new();
+    File::open("java-assets/compiled-classes/BasicClass.class")
+        .unwrap()
+        .read_to_end(&mut original_bytes)
+        .unwrap();
+
+    let mut class_file =
+        ClassFile::read(&mut Cursor::new(&original_bytes)).expect("failed to parse");
+
+    // Find first method with a Code attribute containing Aload0
+    let mut found = false;
+    for method in &mut class_file.methods {
+        for attr in &mut method.attributes {
+            if let Some(AttributeInfoVariant::Code(ref mut code)) = attr.info_parsed {
+                for instr in &mut code.code {
+                    if matches!(instr, classfile_parser::code_attribute::Instruction::Aload0) {
+                        *instr = classfile_parser::code_attribute::Instruction::Aload1;
+                        found = true;
+                        break;
+                    }
+                }
+                if found {
+                    attr.sync_from_parsed().unwrap();
+                    break;
+                }
+            }
+        }
+        if found {
+            break;
+        }
+    }
+    assert!(found, "could not find Aload0 in BasicClass");
+
+    // Write and re-read
+    let mut out = Cursor::new(Vec::new());
+    class_file.write(&mut out).expect("failed to write");
+    let written = out.into_inner();
+
+    let reparsed = ClassFile::read(&mut Cursor::new(&written)).expect("failed to re-parse");
+
+    // Verify the modification survived
+    let mut verified = false;
+    for method in &reparsed.methods {
+        for attr in &method.attributes {
+            if let Some(AttributeInfoVariant::Code(ref code)) = attr.info_parsed {
+                for instr in &code.code {
+                    if matches!(instr, classfile_parser::code_attribute::Instruction::Aload1) {
+                        verified = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(verified, "Aload1 not found after round-trip");
+}
+
+/// Verify constant pool modification survives write → re-read.
+#[test]
+fn test_mutation_round_trip_constant_pool() {
+    let mut original_bytes = Vec::new();
+    File::open("java-assets/compiled-classes/BasicClass.class")
+        .unwrap()
+        .read_to_end(&mut original_bytes)
+        .unwrap();
+
+    let mut class_file =
+        ClassFile::read(&mut Cursor::new(&original_bytes)).expect("failed to parse");
+
+    // Modify a UTF-8 string in the constant pool
+    let mut modified_value = None;
+    for entry in &mut class_file.const_pool {
+        if let ConstantInfo::Utf8(utf8) = entry {
+            if utf8.utf8_string == "Code" {
+                // Don't modify "Code" — it's used for attribute resolution.
+                continue;
+            }
+            if utf8.utf8_string.len() > 2 {
+                modified_value = Some(utf8.utf8_string.clone());
+                utf8.utf8_string = "MODIFIED".to_string();
+                break;
+            }
+        }
+    }
+    let original_value = modified_value.expect("no suitable UTF-8 constant found");
+
+    let mut out = Cursor::new(Vec::new());
+    class_file.write(&mut out).expect("failed to write");
+    let written = out.into_inner();
+
+    let reparsed = ClassFile::read(&mut Cursor::new(&written)).expect("failed to re-parse");
+
+    // Verify the modification survived and original value is gone
+    let mut found_modified = false;
+    let mut found_original = false;
+    for entry in &reparsed.const_pool {
+        if let ConstantInfo::Utf8(utf8) = entry {
+            if utf8.utf8_string == "MODIFIED" {
+                found_modified = true;
+            }
+            if utf8.utf8_string == original_value {
+                found_original = true;
+            }
+        }
+    }
+    assert!(found_modified, "'MODIFIED' not found after round-trip");
+    assert!(
+        !found_original,
+        "original value '{}' still present after modification",
+        original_value
+    );
+}

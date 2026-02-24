@@ -27,6 +27,7 @@ use classfile_parser::field_info::FieldAccessFlags;
 use classfile_parser::jar_utils::{JarFile, JarManifest};
 use classfile_parser::method_info::MethodAccessFlags;
 use classfile_parser::spring_utils::{detect_format, SpringBootFormat};
+use classfile_parser::compile::{compile_method_body, prepend_method_body, CompileOptions};
 use classfile_parser::{ClassAccessFlags, ClassFile};
 
 // ---------------------------------------------------------------------------
@@ -54,8 +55,23 @@ enum VimMode {
     Pending(char),
 }
 
+enum EditState<'a> {
+    SelectMethod {
+        entry_path: String,
+        methods: Vec<(String, String)>, // (name, formatted_signature)
+        selected: usize,
+    },
+    EditCode {
+        entry_path: String,
+        method_name: String,
+        editor: TextArea<'a>,
+        error_message: Option<String>,
+    },
+}
+
 struct App<'a> {
     jar: JarFile,
+    jar_path: String,
     spring_format: Option<SpringBootFormat>,
     tree: Vec<TreeNode>,
     tree_selected: usize,
@@ -68,6 +84,8 @@ struct App<'a> {
     loaded_entry: Option<String>,
     status_message: String,
     should_quit: bool,
+    edit_state: Option<EditState<'a>>,
+    has_unsaved_changes: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,12 +1032,38 @@ fn load_entry_content(jar: &JarFile, path: &str) -> (String, Vec<String>) {
     )
 }
 
+fn extract_methods(jar: &JarFile, entry_path: &str) -> Vec<(String, String)> {
+    let data = match jar.get_entry(entry_path) {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+    let cf = match ClassFile::read(&mut Cursor::new(data)) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    cf.methods
+        .iter()
+        .map(|m| {
+            let name = get_utf8(&cf.const_pool, m.name_index);
+            let desc = get_utf8(&cf.const_pool, m.descriptor_index);
+            let access = format_method_access(m.access_flags);
+            let display = format!(
+                "{} {}{}",
+                access,
+                name,
+                descriptor_to_readable(&desc)
+            );
+            (name, display.trim_start().to_string())
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // App implementation
 // ---------------------------------------------------------------------------
 
 impl<'a> App<'a> {
-    fn new(jar: JarFile) -> Self {
+    fn new(jar: JarFile, jar_path: String) -> Self {
         let spring_format = detect_format(&jar);
         let tree = build_tree(&jar);
         let mut viewer = TextArea::default();
@@ -1028,6 +1072,7 @@ impl<'a> App<'a> {
 
         let mut app = App {
             jar,
+            jar_path,
             spring_format,
             tree,
             tree_selected: 0,
@@ -1040,6 +1085,8 @@ impl<'a> App<'a> {
             loaded_entry: None,
             status_message: String::new(),
             should_quit: false,
+            edit_state: None,
+            has_unsaved_changes: false,
         };
 
         // Build initial status
@@ -1048,6 +1095,21 @@ impl<'a> App<'a> {
     }
 
     fn update_status(&mut self) {
+        // Edit mode status takes priority
+        match &self.edit_state {
+            Some(EditState::SelectMethod { .. }) => {
+                self.status_message =
+                    " SELECT METHOD | j/k:navigate  Enter:select  Esc:cancel".to_string();
+                return;
+            }
+            Some(EditState::EditCode { .. }) => {
+                self.status_message =
+                    " EDIT | Ctrl+S:replace  Ctrl+P:prepend  Esc:cancel".to_string();
+                return;
+            }
+            None => {}
+        }
+
         let mode_str = match &self.vim_mode {
             VimMode::Normal => "NORMAL",
             VimMode::Search => "SEARCH",
@@ -1062,8 +1124,13 @@ impl<'a> App<'a> {
             Some(SpringBootFormat::War) => " [Spring Boot WAR]",
             None => "",
         };
+        let modified = if self.has_unsaved_changes {
+            " [modified]"
+        } else {
+            ""
+        };
         self.status_message = format!(
-            " {mode_str} | {focus_str}{spring} | Tab:switch  hjkl:move  gg/G:top/bot  /:search  q:quit"
+            " {mode_str} | {focus_str}{spring}{modified} | Tab:switch  e:edit  W:save  hjkl:move  q:quit"
         );
     }
 
@@ -1160,6 +1227,116 @@ impl<'a> App<'a> {
             }
         }
     }
+
+    fn enter_edit_mode(&mut self) {
+        let entry_path = match &self.loaded_entry {
+            Some(p) if p.ends_with(".class") => p.clone(),
+            _ => return,
+        };
+        let methods = extract_methods(&self.jar, &entry_path);
+        if methods.is_empty() {
+            self.status_message = " No methods found in class".to_string();
+            return;
+        }
+        self.edit_state = Some(EditState::SelectMethod {
+            entry_path,
+            methods,
+            selected: 0,
+        });
+        self.update_status();
+    }
+
+    fn apply_edit(&mut self, prepend: bool) {
+        let (entry_path, method_name, source) = match &self.edit_state {
+            Some(EditState::EditCode {
+                entry_path,
+                method_name,
+                editor,
+                ..
+            }) => {
+                let src = editor.lines().join("\n");
+                (entry_path.clone(), method_name.clone(), src)
+            }
+            _ => return,
+        };
+
+        let data = match self.jar.get_entry(&entry_path) {
+            Some(d) => d.to_vec(),
+            None => {
+                if let Some(EditState::EditCode { error_message, .. }) = &mut self.edit_state {
+                    *error_message = Some(format!("Entry not found: {entry_path}"));
+                }
+                return;
+            }
+        };
+
+        let mut cf = match ClassFile::read(&mut Cursor::new(&data)) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(EditState::EditCode { error_message, .. }) = &mut self.edit_state {
+                    *error_message = Some(format!("Failed to parse class: {e}"));
+                }
+                return;
+            }
+        };
+
+        let opts = CompileOptions::default();
+        let result = if prepend {
+            prepend_method_body(&source, &mut cf, &method_name, &opts)
+        } else {
+            compile_method_body(&source, &mut cf, &method_name, &opts)
+        };
+
+        match result {
+            Ok(()) => {
+                match cf.to_bytes() {
+                    Ok(bytes) => {
+                        self.jar.set_entry(&entry_path, bytes);
+                        self.has_unsaved_changes = true;
+                        let action = if prepend { "Prepended to" } else { "Replaced" };
+                        self.status_message =
+                            format!(" {action} '{method_name}' | W:save JAR");
+                        self.edit_state = None;
+                        self.loaded_entry = None;
+                        self.load_selected_entry();
+                    }
+                    Err(e) => {
+                        if let Some(EditState::EditCode { error_message, .. }) =
+                            &mut self.edit_state
+                        {
+                            *error_message = Some(format!("Failed to serialize class: {e}"));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(EditState::EditCode { error_message, .. }) = &mut self.edit_state {
+                    *error_message = Some(format!("{e}"));
+                }
+            }
+        }
+    }
+
+    fn save_jar(&mut self) {
+        if !self.has_unsaved_changes {
+            self.status_message = " No unsaved changes".to_string();
+            return;
+        }
+        let output_path = if self.jar_path.ends_with(".jar") {
+            self.jar_path.replace(".jar", ".patched.jar")
+        } else {
+            format!("{}.patched", self.jar_path)
+        };
+        match self.jar.save(&output_path) {
+            Ok(()) => {
+                self.has_unsaved_changes = false;
+                self.status_message = format!(" Saved to {output_path}");
+            }
+            Err(e) => {
+                self.status_message = format!(" Save failed: {e}");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,6 +1347,13 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     // Global shortcuts
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.should_quit = true;
+        return;
+    }
+
+    // Edit mode intercepts all input
+    if app.edit_state.is_some() {
+        handle_edit_input(app, key);
+        app.update_status();
         return;
     }
 
@@ -1233,12 +1417,112 @@ fn handle_tree_input(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') => {
             app.tree_selected = max;
         }
+        KeyCode::Char('e') => {
+            app.enter_edit_mode();
+        }
+        KeyCode::Char('W') => {
+            app.save_jar();
+        }
         KeyCode::Tab => {
             if app.loaded_entry.is_some() {
                 app.focus = Focus::Viewer;
             }
         }
         _ => {}
+    }
+}
+
+fn handle_edit_input(app: &mut App, key: KeyEvent) {
+    // Determine which edit sub-state we're in
+    let is_select = matches!(app.edit_state, Some(EditState::SelectMethod { .. }));
+
+    if is_select {
+        handle_edit_select(app, key);
+    } else {
+        handle_edit_code(app, key);
+    }
+}
+
+fn handle_edit_select(app: &mut App, key: KeyEvent) {
+    let method_count = match &app.edit_state {
+        Some(EditState::SelectMethod { methods, .. }) => methods.len(),
+        _ => return,
+    };
+    let max = method_count.saturating_sub(1);
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(EditState::SelectMethod { selected, .. }) = &mut app.edit_state {
+                *selected = (*selected + 1).min(max);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(EditState::SelectMethod { selected, .. }) = &mut app.edit_state {
+                *selected = selected.saturating_sub(1);
+            }
+        }
+        KeyCode::Enter => {
+            // Transition to EditCode
+            if let Some(EditState::SelectMethod {
+                entry_path,
+                methods,
+                selected,
+            }) = app.edit_state.take()
+            {
+                let (method_name, _) = &methods[selected];
+                let mut editor = TextArea::new(vec!["{ ".to_string(), "  ".to_string(), "}".to_string()]);
+                editor.set_cursor_line_style(Style::default().bg(Color::DarkGray));
+                editor.set_cursor_style(
+                    Style::default().bg(Color::White).fg(Color::Black),
+                );
+                editor.set_line_number_style(Style::default().fg(Color::DarkGray));
+                // Position cursor on the middle line
+                editor.move_cursor(CursorMove::Down);
+                editor.move_cursor(CursorMove::End);
+
+                app.edit_state = Some(EditState::EditCode {
+                    entry_path,
+                    method_name: method_name.clone(),
+                    editor,
+                    error_message: None,
+                });
+            }
+        }
+        KeyCode::Esc => {
+            app.edit_state = None;
+        }
+        _ => {}
+    }
+}
+
+fn handle_edit_code(app: &mut App, key: KeyEvent) {
+    // Ctrl+S → replace, Ctrl+P → prepend, Escape → cancel
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('s') => {
+                app.apply_edit(false);
+                return;
+            }
+            KeyCode::Char('p') => {
+                app.apply_edit(true);
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    if key.code == KeyCode::Esc {
+        app.edit_state = None;
+        return;
+    }
+
+    // Forward to TextArea editor
+    if let Some(EditState::EditCode { editor, error_message, .. }) = &mut app.edit_state {
+        editor.input(key);
+        // Clear error on new input
+        if error_message.is_some() {
+            *error_message = None;
+        }
     }
 }
 
@@ -1446,6 +1730,26 @@ fn render_tree(app: &mut App, frame: &mut ratatui::Frame, area: Rect) {
 }
 
 fn render_viewer(app: &mut App, frame: &mut ratatui::Frame, area: Rect) {
+    // Edit mode rendering
+    match &mut app.edit_state {
+        Some(EditState::SelectMethod {
+            methods, selected, ..
+        }) => {
+            render_method_selector(frame, area, methods, *selected);
+            return;
+        }
+        Some(EditState::EditCode {
+            method_name,
+            editor,
+            error_message,
+            ..
+        }) => {
+            render_code_editor(frame, area, method_name, editor, error_message.as_deref());
+            return;
+        }
+        None => {}
+    }
+
     let title = if app.vim_mode == VimMode::Search {
         format!(" {} | /{} ", app.viewer_title, app.search_buffer)
     } else {
@@ -1472,6 +1776,93 @@ fn render_viewer(app: &mut App, frame: &mut ratatui::Frame, area: Rect) {
     }
 
     frame.render_widget(&app.viewer, area);
+}
+
+fn render_method_selector(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    methods: &[(String, String)],
+    selected: usize,
+) {
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let scroll = if selected >= inner_height {
+        selected - inner_height + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = methods
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(inner_height)
+        .map(|(i, (_, display))| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(format!("  {display}"), style)))
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Select Method ")
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, area);
+}
+
+fn render_code_editor(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    method_name: &str,
+    editor: &mut TextArea,
+    error_message: Option<&str>,
+) {
+    if let Some(err) = error_message {
+        // Split: editor on top, error on bottom
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(3)])
+            .split(area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Edit: {method_name} "))
+            .border_style(Style::default().fg(Color::Green));
+        editor.set_block(block);
+        editor.set_cursor_line_style(Style::default().bg(Color::DarkGray));
+        editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+        editor.set_line_number_style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(&*editor, chunks[0]);
+
+        let error_block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Error ")
+            .border_style(Style::default().fg(Color::Red));
+        let error_text = Paragraph::new(Line::from(Span::styled(
+            err,
+            Style::default().fg(Color::Red),
+        )))
+        .block(error_block);
+        frame.render_widget(error_text, chunks[1]);
+    } else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Edit: {method_name} "))
+            .border_style(Style::default().fg(Color::Green));
+        editor.set_block(block);
+        editor.set_cursor_line_style(Style::default().bg(Color::DarkGray));
+        editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+        editor.set_line_number_style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(&*editor, area);
+    }
 }
 
 fn render_status(app: &App, frame: &mut ratatui::Frame, area: Rect) {
@@ -1503,7 +1894,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(jar);
+    let mut app = App::new(jar, path.clone());
 
     // Main loop
     loop {

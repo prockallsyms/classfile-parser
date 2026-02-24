@@ -131,7 +131,7 @@ impl Parser {
     }
 
     /// Lookahead to determine if current position starts a local declaration.
-    /// Pattern: Ident ("." Ident)* ("[" "]")* Ident
+    /// Pattern: Ident ("." Ident)* ("<" ... ">")? ("[" "]")* Ident
     /// vs expression: Ident followed by operator/dot-method/etc.
     fn is_local_decl_start(&self) -> bool {
         let mut i = self.pos;
@@ -151,6 +151,20 @@ impl Parser {
                 }
             } else {
                 break;
+            }
+        }
+        // Skip generic type parameters: "<" ... ">"
+        if i < self.tokens.len() && self.tokens[i].token == Token::Lt {
+            i += 1;
+            let mut depth: i32 = 1;
+            while i < self.tokens.len() && depth > 0 {
+                match &self.tokens[i].token {
+                    Token::Lt => { depth += 1; i += 1; }
+                    Token::Gt => { depth -= 1; i += 1; }
+                    Token::GtGt => { depth -= 2; i += 1; }
+                    Token::Eof => break,
+                    _ => { i += 1; }
+                }
             }
         }
         // Skip array brackets: "[" "]"
@@ -492,6 +506,10 @@ impl Parser {
                     } else {
                         break;
                     }
+                }
+                // Skip generic type parameters: List<String>, Map<K,V>, etc. (erased at compile time)
+                if self.at(&Token::Lt) {
+                    self.skip_type_parameters()?;
                 }
                 TypeName::Class(name)
             }
