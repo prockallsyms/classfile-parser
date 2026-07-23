@@ -46,3 +46,7 @@ required-features = ["compile"]
 [[example]]
 name = "jar_patch"
 required-features = ["jar-patch"]
+
+[[example]]
+name = "decompile_jar"
+required-features = ["jar-utils", "decompile"]
