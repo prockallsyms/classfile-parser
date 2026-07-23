@@ -10,24 +10,24 @@ use std::io::{self, Cursor};
 use binrw::BinRead;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::Terminal;
 use tui_textarea::{CursorMove, TextArea};
 
 use classfile_parser::attribute_info::{
     AttributeInfoVariant, CodeAttribute, ExceptionEntry, LineNumberTableAttribute,
 };
 use classfile_parser::code_attribute::Instruction;
-use classfile_parser::compile::{CompileOptions, compile_method_body, prepend_method_body};
+use classfile_parser::compile::{compile_method_body, prepend_method_body, CompileOptions};
 use classfile_parser::constant_info::ConstantInfo;
 use classfile_parser::field_info::FieldAccessFlags;
 use classfile_parser::jar_utils::{JarFile, JarManifest};
 use classfile_parser::method_info::MethodAccessFlags;
-use classfile_parser::spring_utils::{SpringBootFormat, detect_format};
+use classfile_parser::spring_utils::{detect_format, SpringBootFormat};
 use classfile_parser::{ClassAccessFlags, ClassFile};
 
 // ---------------------------------------------------------------------------
@@ -1691,7 +1691,11 @@ fn render_tree(app: &mut App, frame: &mut ratatui::Frame, area: Rect) {
             let node = &app.tree[idx];
             let indent = "  ".repeat(node.depth);
             let icon = if node.is_dir {
-                if node.expanded { "[-] " } else { "[+] " }
+                if node.expanded {
+                    "[-] "
+                } else {
+                    "[+] "
+                }
             } else if node.label.ends_with(".class") {
                 "> "
             } else {
@@ -1922,7 +1926,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                handle_key_event(&mut app, key);
+                if key.kind == crossterm::event::KeyEventKind::Press {
+                    handle_key_event(&mut app, key);
+                }
             }
         }
 
