@@ -33,3 +33,9 @@ javac -d java-assets/compiled-classes/ java-assets/src/HelloWorld.java
 printf '\xde\xad\xbe\xef' > java-assets/compiled-classes/malformed.class
 tail -c+5 java-assets/compiled-classes/HelloWorld.class >> java-assets/compiled-classes/malformed.class
 
+# CondyExample.class contains CONSTANT_Dynamic entries, which javac never emits.
+# It is generated with the JDK 24+ Class-File API (java.lang.classfile); the
+# generator's own class file goes to the gitignored java-assets/out directory.
+javac -d java-assets/out java-assets/src/CondyGen.java
+java -cp java-assets/out CondyGen java-assets/compiled-classes/CondyExample.class
+
