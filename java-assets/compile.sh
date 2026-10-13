@@ -11,10 +11,13 @@ location of your Java installation."
     fi
 else
     JAVAC=javac
-    which javac >/dev/null 2>&1 || echo "ERROR: JAVA_HOME is not set and no 'javac' command could be found in your PATH.
+    if ! which javac >/dev/null 2>&1 ; then
+        echo "ERROR: JAVA_HOME is not set and no 'javac' command could be found in your PATH.
 
 Please set the JAVA_HOME variable in your environment to match the
-location of your Java installation." && exit 1
+location of your Java installation."
+        exit 1
+    fi
 fi
 
 echo "Using: $(${JAVAC} -version)"
@@ -27,6 +30,10 @@ javac -d java-assets/compiled-classes/ java-assets/src/UnicodeStrings.java
 javac -d java-assets/compiled-classes/ java-assets/src/DeprecatedAnnotation.java
 javac -d java-assets/compiled-classes/ java-assets/src/InnerClasses.java
 javac -d java-assets/compiled-classes/ java-assets/src/Annotations.java
+javac -d java-assets/compiled-classes/ java-assets/src/NestExample.java
+javac -d java-assets/compiled-classes/ java-assets/src/RecordExample.java
+javac -d java-assets/compiled-classes/ java-assets/src/SealedExample.java
+javac -d java-assets/compiled-classes/ java-assets/src/module-info.java java-assets/src/com/some/Thing.java
 
 javac -g -d java-assets/compiled-classes/ java-assets/src/LocalVariableTable.java
 javac -d java-assets/compiled-classes/ java-assets/src/HelloWorld.java
