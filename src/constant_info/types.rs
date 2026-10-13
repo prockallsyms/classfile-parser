@@ -4,6 +4,7 @@ use std::fmt::Debug;
 /// A constant pool entry (JVMS §4.4). The leading tag byte selects the variant.
 #[derive(Clone, Debug)]
 #[binrw]
+#[br(return_unexpected_error)]
 pub enum ConstantInfo {
     #[brw(magic(1u8))]
     Utf8(Utf8Constant),
@@ -39,6 +40,11 @@ pub enum ConstantInfo {
     Module(ModuleConstant),
     #[brw(magic(20u8))]
     Package(PackageConstant),
+    /// Placeholder for the second constant pool slot occupied by a `Long` or `Double`
+    /// entry (JVMS §4.4.5). It is inserted by the constant pool reader, never parsed
+    /// from the stream (`pre_assert(false)` keeps it from matching unknown tags), and
+    /// never written (`write_const_pool` skips it).
+    #[br(pre_assert(false))]
     Unusable,
 }
 

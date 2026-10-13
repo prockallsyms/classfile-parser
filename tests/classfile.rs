@@ -326,3 +326,47 @@ fn test_mutation_round_trip_constant_pool() {
         original_value
     );
 }
+
+/// Splice an entry with a tag the JVMS does not define after the last real constant
+/// and bump constant_pool_count. The parser must reject it with an error naming the
+/// tag and entry, rather than mis-reading the rest of the file.
+#[test]
+fn test_unknown_constant_tag_is_rejected() {
+    let mut original_bytes: Vec<u8> = Vec::new();
+    File::open("java-assets/compiled-classes/HelloWorld.class")
+        .unwrap()
+        .read_to_end(&mut original_bytes)
+        .unwrap();
+    let parsed = ClassFile::read(&mut Cursor::new(&original_bytes)).expect("failed to parse class");
+
+    // Serialized size of the constant pool (Unusable slots are not written).
+    let pool_len: usize = parsed
+        .const_pool
+        .iter()
+        .filter(|entry| !matches!(entry, ConstantInfo::Unusable))
+        .map(|entry| {
+            let mut buf = Cursor::new(Vec::new());
+            entry.write_be(&mut buf).unwrap();
+            buf.into_inner().len()
+        })
+        .sum();
+    let pool_end = 10 + pool_len; // magic(4) + minor(2) + major(2) + constant_pool_count(2)
+
+    let mut patched = Vec::with_capacity(original_bytes.len() + 5);
+    patched.extend_from_slice(&original_bytes[..pool_end]);
+    patched.extend_from_slice(&[99, 0, 0, 0, 1]); // tag 99 is not a JVMS constant tag
+    patched.extend_from_slice(&original_bytes[pool_end..]);
+    let count = u16::from_be_bytes([patched[8], patched[9]]) + 1;
+    patched[8..10].copy_from_slice(&count.to_be_bytes());
+
+    let err = ClassFile::read(&mut Cursor::new(&patched)).expect_err("unknown tag must not parse");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown constant pool tag 99"),
+        "unexpected error: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("entry #{}", parsed.const_pool.len() + 1)),
+        "unexpected error: {msg}"
+    );
+}

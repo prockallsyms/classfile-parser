@@ -108,6 +108,10 @@ The `Instruction` enum uses `return_unexpected_error` for concise error messages
 
 `TargetInfo` uses `#[br(import(target_type: u8))]` with `pre_assert` on each variant to dispatch based on the `target_type` byte from the enclosing `TypeAnnotation`. This is needed because `TargetInfo` has no magic bytes — the discriminant comes from a sibling field.
 
+### Unknown constant pool tags
+
+`ConstantInfo` uses `return_unexpected_error`, and the `Unusable` sentinel variant carries `pre_assert(false)` so it never matches on read (it is only inserted by `const_pool_parser` after `Long`/`Double` entries). When no variant matches, `const_pool_parser` re-reads the tag byte and fails with `unknown constant pool tag N in entry #k` (or `truncated or invalid ...` when the tag is a known one whose payload is short).
+
 ## Compile Feature Architecture
 
 The `compile` feature (`src/compile/`) is a mini Java-to-bytecode compiler for replacing method bodies. Pipeline: Lexer → Parser → AST → CodeGen.
@@ -215,7 +219,7 @@ Prioritized list of missing features. Items marked [done] have been implemented.
 - Compile P1 complete: multi-catch, synchronized blocks, field assignment fix for cat-2 values, method resolution (invokeinterface, pool-based receiver inference, pool-based static detection, descriptor inference fallback for unknown methods)
 - Compile P2 complete: `var` keyword (type inference), switch expressions (arrow syntax), multi-dimensional arrays (multianewarray), generic type params (parse-and-discard), lambda expressions (invokedynamic + synthetic methods + bootstrap methods), method references
 - Constant pool helpers: `get_or_add_method_handle`, `get_or_add_method_type`, `get_or_add_invoke_dynamic`, `get_or_add_dynamic`
-- CONSTANT_Dynamic (tag 17) parsed and written
+- CONSTANT_Dynamic (tag 17) parsed and written; unknown constant pool tags are rejected with an error naming the tag and entry
 - JAR patching: `patch_jar_method!`, `patch_jar_class!`, `patch_jar!` macros with E2E tests
 - StackMapTable: VType resolution for reference-type locals (including parameters) uses constant pool indices; for-each loop variables allocated after loop-top label for correct frame generation; category-2 types (Long/Double) correctly omit implicit Top continuation slots in frame encoding
 - Method descriptor inference: `find_method_descriptor_in_pool()` falls back to `infer_method_descriptor()` for methods not in the pool, with well-known collection method signatures and heuristic return types

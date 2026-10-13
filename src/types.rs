@@ -69,7 +69,37 @@ fn const_pool_parser<R: Read + Seek>(
     validate_count_vs_remaining(r, count, 3, "constant_pool_count")?;
     let mut v = vec![];
     while v.len() < count {
-        v.push(ConstantInfo::read_options(r, endian, args.inner)?);
+        let pos = r.stream_position().map_err(binrw::Error::Io)?;
+        let entry = match ConstantInfo::read_options(r, endian, ()) {
+            Ok(entry) => entry,
+            Err(binrw::Error::NoVariantMatch { .. }) => {
+                // No variant matched: either the tag is not defined by the JVMS, or a
+                // known tag's payload was truncated (binrw rewinds and tries the other
+                // variants in that case too). Report the tag and the 1-based entry index.
+                r.seek(std::io::SeekFrom::Start(pos))
+                    .map_err(binrw::Error::Io)?;
+                let entry_index = v.len() + 1;
+                let Ok(tag) = u8::read_options(r, endian, ()) else {
+                    return Err(binrw::Error::AssertFail {
+                        pos,
+                        message: format!(
+                            "unexpected end of data in constant pool entry #{entry_index}"
+                        ),
+                    });
+                };
+                let what = if matches!(tag, 1 | 3..=12 | 15..=20) {
+                    "truncated or invalid"
+                } else {
+                    "unknown"
+                };
+                return Err(binrw::Error::AssertFail {
+                    pos,
+                    message: format!("{what} constant pool tag {tag} in entry #{entry_index}"),
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        v.push(entry);
         if matches!(
             v.last().unwrap(),
             ConstantInfo::Double(_) | ConstantInfo::Long(_)
