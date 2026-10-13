@@ -176,6 +176,14 @@ pub enum Expr {
         captures: Vec<Expr>,
     },
 
+    // --- CONSTANT_Dynamic loaded with ldc/ldc_w/ldc2_w that could not be reduced ---
+    DynamicConstant {
+        bootstrap_index: u16,
+        name: String,
+        descriptor: String,
+        value_type: JvmType,
+    },
+
     // --- Ternary (synthesized during structuring) ---
     Ternary {
         condition: Box<Expr>,

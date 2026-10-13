@@ -248,6 +248,17 @@ pub fn format_constant(const_pool: &[ConstantInfo], index: u16) -> String {
             }
         }
         Some(ConstantInfo::Utf8(c)) => c.utf8_string.clone(),
+        Some(ConstantInfo::Dynamic(c)) => {
+            match get_name_and_type(const_pool, c.name_and_type_index) {
+                Some((name, desc)) => {
+                    format!(
+                        "dynamic #{} {}:{}",
+                        c.bootstrap_method_attr_index, name, desc
+                    )
+                }
+                None => format!("<dynamic #{}>", index),
+            }
+        }
         _ => format!("<cp #{}>", index),
     }
 }

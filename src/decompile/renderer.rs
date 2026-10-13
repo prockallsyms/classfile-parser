@@ -953,6 +953,11 @@ impl JavaRenderer {
                     self.render_expr(else_expr)
                 )
             }
+            Expr::DynamicConstant {
+                bootstrap_index,
+                name,
+                ..
+            } => format!("/* dynamic #{} */ {}", bootstrap_index, name),
             Expr::Unresolved(msg) => msg.clone(),
             Expr::Dup(inner) => self.render_expr(inner),
             Expr::UninitNew { class_name } => format!(

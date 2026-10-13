@@ -9,7 +9,7 @@ use classfile_parser::decompile::cfg;
 use classfile_parser::decompile::descriptor;
 use classfile_parser::decompile::stack_sim;
 use classfile_parser::decompile::structuring;
-use classfile_parser::decompile::{self, DecompileOptions, Decompiler, RenderConfig};
+use classfile_parser::decompile::{self, DecompileOptions, Decompiler, Expr, RenderConfig, Stmt};
 
 fn load_class(name: &str) -> ClassFile {
     let path = format!("java-assets/compiled-classes/{}", name);
@@ -124,7 +124,7 @@ fn test_stack_sim_basic_class() {
                 .contains(classfile_parser::method_info::MethodAccessFlags::STATIC);
             let cfg = cfg::build_cfg(code);
             let simulated =
-                stack_sim::simulate_all_blocks(&cfg, &class.const_pool, code, is_static);
+                stack_sim::simulate_all_blocks(&cfg, &class.const_pool, &[], code, is_static);
             assert!(!simulated.is_empty(), "Should have simulated blocks");
         }
     }
@@ -136,7 +136,7 @@ fn test_stack_sim_hello_world() {
     let method = class.find_method("main").expect("main method should exist");
     let code = method.code().expect("main should have code");
     let cfg = cfg::build_cfg(code);
-    let simulated = stack_sim::simulate_all_blocks(&cfg, &class.const_pool, code, true);
+    let simulated = stack_sim::simulate_all_blocks(&cfg, &class.const_pool, &[], code, true);
 
     // main method should produce at least a method call statement (System.out.println)
     let total_stmts: usize = simulated.iter().map(|b| b.statements.len()).sum();
@@ -158,7 +158,7 @@ fn test_structuring_basic() {
                 .contains(classfile_parser::method_info::MethodAccessFlags::STATIC);
             let cfg = cfg::build_cfg(code);
             let simulated =
-                stack_sim::simulate_all_blocks(&cfg, &class.const_pool, code, is_static);
+                stack_sim::simulate_all_blocks(&cfg, &class.const_pool, &[], code, is_static);
             let body = structuring::structure_method(&cfg, &simulated, &class.const_pool);
             assert!(!body.statements.is_empty() || code.code.is_empty());
         }
@@ -318,4 +318,49 @@ fn test_decompile_all_test_classes() {
             }
         }
     }
+}
+
+// ---- CONSTANT_Dynamic (condy) tests ----
+
+/// Well-known `ConstantBootstraps` constants are reduced to the expressions they denote.
+#[test]
+fn test_decompile_dynamic_constants() {
+    let class = load_class("CondyExample.class");
+    let result = decompile::decompile(&class).expect("decompilation should succeed");
+    assert!(
+        result.contains("return null;"),
+        "nullConstant should render as null:\n{result}"
+    );
+    assert!(
+        result.contains("return int.class;"),
+        "primitiveClass should render as int.class:\n{result}"
+    );
+    assert!(
+        result.contains("return (long)42;"),
+        "explicitCast should render as a cast:\n{result}"
+    );
+    println!("--- CondyExample decompilation ---\n{}", result);
+}
+
+/// Without bootstrap method information the constant is kept as a typed placeholder.
+#[test]
+fn test_dynamic_constant_without_bootstrap_info_is_kept() {
+    let class = load_class("CondyExample.class");
+    let method = class.find_method("getLong").expect("getLong should exist");
+    let code = method.code().expect("getLong should have code");
+    let cfg = cfg::build_cfg(code);
+    let simulated = stack_sim::simulate_all_blocks(&cfg, &class.const_pool, &[], code, true);
+    let stmts: Vec<&Stmt> = simulated.iter().flat_map(|b| b.statements.iter()).collect();
+    assert!(
+        stmts.iter().any(|s| matches!(
+            s,
+            Stmt::Return(Some(Expr::DynamicConstant {
+                bootstrap_index: 2,
+                name,
+                descriptor,
+                value_type: descriptor::JvmType::Long,
+            })) if name == "_" && descriptor == "J"
+        )),
+        "expected a DynamicConstant return, got {stmts:?}"
+    );
 }

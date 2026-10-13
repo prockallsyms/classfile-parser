@@ -215,6 +215,8 @@ impl Decompiler {
     fn build_ast(&self, class: &ClassFile) -> Result<JavaClass, DecompileError> {
         let mut java_class = type_inference::build_java_class(class);
 
+        let bootstrap_methods = bootstrap_methods_of(class);
+
         // Decompile each method's body
         for (i, method) in class.methods.iter().enumerate() {
             if i >= java_class.methods.len() {
@@ -241,6 +243,7 @@ impl Decompiler {
             match self.decompile_method_body(
                 code_attr,
                 &class.const_pool,
+                bootstrap_methods,
                 method.access_flags.contains(MethodAccessFlags::STATIC),
             ) {
                 Ok(body) => {
@@ -274,6 +277,7 @@ impl Decompiler {
         &self,
         code_attr: &crate::attribute_info::CodeAttribute,
         const_pool: &[crate::constant_info::ConstantInfo],
+        bootstrap_methods: &[crate::attribute_info::BootstrapMethod],
         is_static: bool,
     ) -> Result<super::structured_types::StructuredBody, DecompileError> {
         // Phase 1: Build CFG
@@ -284,7 +288,13 @@ impl Decompiler {
         }
 
         // Phase 2: Stack simulation
-        let simulated = stack_sim::simulate_all_blocks(&cfg, const_pool, code_attr, is_static);
+        let simulated = stack_sim::simulate_all_blocks(
+            &cfg,
+            const_pool,
+            bootstrap_methods,
+            code_attr,
+            is_static,
+        );
 
         // Phase 3: Control flow structuring
         let mut body = structuring::structure_method(&cfg, &simulated, const_pool);
@@ -303,6 +313,20 @@ impl Decompiler {
 
         Ok(body)
     }
+}
+
+/// The entries of the class's BootstrapMethods attribute (empty when absent).
+fn bootstrap_methods_of(class: &ClassFile) -> &[crate::attribute_info::BootstrapMethod] {
+    class
+        .attributes
+        .iter()
+        .find_map(|attr| match &attr.info_parsed {
+            Some(crate::attribute_info::AttributeInfoVariant::BootstrapMethods(b)) => {
+                Some(b.bootstrap_methods.as_slice())
+            }
+            _ => None,
+        })
+        .unwrap_or(&[])
 }
 
 fn is_static_inner(class: &ClassFile) -> bool {

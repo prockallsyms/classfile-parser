@@ -1,8 +1,9 @@
-use crate::attribute_info::{AttributeInfoVariant, CodeAttribute};
+use crate::attribute_info::{AttributeInfoVariant, BootstrapMethod, CodeAttribute};
 use crate::code_attribute::Instruction;
 use crate::constant_info::ConstantInfo;
 
 use super::cfg_types::*;
+use super::condy;
 use super::descriptor::*;
 use super::expr::*;
 use super::util;
@@ -78,7 +79,11 @@ fn resolve_method_ref(
 }
 
 /// Load a constant from the constant pool by index (for ldc/ldc_w/ldc2_w).
-fn load_constant(const_pool: &[ConstantInfo], index: u16) -> Expr {
+fn load_constant(
+    const_pool: &[ConstantInfo],
+    bootstrap_methods: &[BootstrapMethod],
+    index: u16,
+) -> Expr {
     match const_pool.get((index as usize).wrapping_sub(1)) {
         Some(ConstantInfo::Integer(c)) => Expr::IntLiteral(c.value),
         Some(ConstantInfo::Float(c)) => Expr::FloatLiteral(c.value),
@@ -98,6 +103,9 @@ fn load_constant(const_pool: &[ConstantInfo], index: u16) -> Expr {
                 Expr::Unresolved(format!("class_cp#{}", c.name_index))
             }
         }
+        Some(ConstantInfo::Dynamic(c)) => {
+            condy::load_dynamic_constant(const_pool, bootstrap_methods, c, index, 0)
+        }
         _ => Expr::Unresolved(format!("cp#{}", index)),
     }
 }
@@ -107,6 +115,7 @@ fn load_constant(const_pool: &[ConstantInfo], index: u16) -> Expr {
 pub fn simulate_block(
     block: &BasicBlock,
     const_pool: &[ConstantInfo],
+    bootstrap_methods: &[BootstrapMethod],
     code_attr: &CodeAttribute,
     is_static: bool,
 ) -> SimulatedBlock {
@@ -153,9 +162,15 @@ pub fn simulate_block(
             Instruction::Bipush(val) => stack.push(Expr::IntLiteral(*val as i32)),
             Instruction::Sipush(val) => stack.push(Expr::IntLiteral(*val as i32)),
 
-            Instruction::Ldc(idx) => stack.push(load_constant(const_pool, *idx as u16)),
-            Instruction::LdcW(idx) => stack.push(load_constant(const_pool, *idx)),
-            Instruction::Ldc2W(idx) => stack.push(load_constant(const_pool, *idx)),
+            Instruction::Ldc(idx) => {
+                stack.push(load_constant(const_pool, bootstrap_methods, *idx as u16))
+            }
+            Instruction::LdcW(idx) => {
+                stack.push(load_constant(const_pool, bootstrap_methods, *idx))
+            }
+            Instruction::Ldc2W(idx) => {
+                stack.push(load_constant(const_pool, bootstrap_methods, *idx))
+            }
 
             // ============================================================
             // Loads
@@ -1560,12 +1575,13 @@ pub fn simulate_block(
 pub fn simulate_all_blocks(
     cfg: &ControlFlowGraph,
     const_pool: &[ConstantInfo],
+    bootstrap_methods: &[BootstrapMethod],
     code_attr: &CodeAttribute,
     is_static: bool,
 ) -> Vec<SimulatedBlock> {
     cfg.blocks
         .values()
-        .map(|block| simulate_block(block, const_pool, code_attr, is_static))
+        .map(|block| simulate_block(block, const_pool, bootstrap_methods, code_attr, is_static))
         .collect()
 }
 

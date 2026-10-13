@@ -422,6 +422,10 @@ fn format_constant(const_pool: &[ConstantInfo], index: u16) -> String {
         Some(ConstantInfo::MethodType(mt)) => {
             format!("methodtype {}", get_utf8(const_pool, mt.descriptor_index))
         }
+        Some(ConstantInfo::Dynamic(d)) => {
+            let (name, desc) = get_name_and_type(const_pool, d.name_and_type_index);
+            format!("dynamic #{} {name}:{desc}", d.bootstrap_method_attr_index)
+        }
         _ => format!("#{index}"),
     }
 }
