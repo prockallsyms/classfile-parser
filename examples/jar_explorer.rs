@@ -573,6 +573,10 @@ fn format_class_bytecode(cf: &ClassFile) -> Vec<String> {
                 )
             }
             ConstantInfo::MethodType(t) => format!("MethodType #{}", t.descriptor_index),
+            ConstantInfo::Dynamic(d) => format!(
+                "Dynamic #{}:#{}",
+                d.bootstrap_method_attr_index, d.name_and_type_index
+            ),
             ConstantInfo::InvokeDynamic(d) => format!(
                 "InvokeDynamic #{}:#{}",
                 d.bootstrap_method_attr_index, d.name_and_type_index

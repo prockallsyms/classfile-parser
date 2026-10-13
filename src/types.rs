@@ -2,9 +2,10 @@ use std::io::{Read, Seek};
 
 use crate::attribute_info::AttributeInfo;
 use crate::constant_info::{
-    ClassConstant, ConstantInfo, DoubleConstant, FieldRefConstant, FloatConstant, IntegerConstant,
-    InterfaceMethodRefConstant, InvokeDynamicConstant, LongConstant, MethodHandleConstant,
-    MethodRefConstant, MethodTypeConstant, NameAndTypeConstant, StringConstant, Utf8Constant,
+    ClassConstant, ConstantInfo, DoubleConstant, DynamicConstant, FieldRefConstant, FloatConstant,
+    IntegerConstant, InterfaceMethodRefConstant, InvokeDynamicConstant, LongConstant,
+    MethodHandleConstant, MethodRefConstant, MethodTypeConstant, NameAndTypeConstant,
+    StringConstant, Utf8Constant,
 };
 use crate::field_info::FieldInfo;
 use crate::method_info::MethodInfo;
@@ -598,6 +599,34 @@ impl ClassFile {
                 bootstrap_method_attr_index,
                 name_and_type_index: nat_idx,
             }));
+        index
+    }
+
+    /// Get or add a Dynamic constant (CONSTANT_Dynamic, JVMS §4.4.10), deduplicating.
+    ///
+    /// `descriptor` is a *field* descriptor naming the type of the loaded constant
+    /// (e.g. `"J"` or `"Ljava/lang/Object;"`), unlike `get_or_add_invoke_dynamic`,
+    /// which takes a method descriptor.
+    pub fn get_or_add_dynamic(
+        &mut self,
+        bootstrap_method_attr_index: u16,
+        name: &str,
+        descriptor: &str,
+    ) -> u16 {
+        let nat_idx = self.get_or_add_name_and_type(name, descriptor);
+        for (i, entry) in self.const_pool.iter().enumerate() {
+            if let ConstantInfo::Dynamic(c) = entry
+                && c.bootstrap_method_attr_index == bootstrap_method_attr_index
+                && c.name_and_type_index == nat_idx
+            {
+                return (i + 1) as u16;
+            }
+        }
+        let index = (self.const_pool.len() + 1) as u16;
+        self.const_pool.push(ConstantInfo::Dynamic(DynamicConstant {
+            bootstrap_method_attr_index,
+            name_and_type_index: nat_idx,
+        }));
         index
     }
 

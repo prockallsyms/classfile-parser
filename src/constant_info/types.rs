@@ -1,6 +1,7 @@
 use binrw::{BinResult, binrw};
 use std::fmt::Debug;
 
+/// A constant pool entry (JVMS §4.4). The leading tag byte selects the variant.
 #[derive(Clone, Debug)]
 #[binrw]
 pub enum ConstantInfo {
@@ -30,6 +31,8 @@ pub enum ConstantInfo {
     MethodHandle(MethodHandleConstant),
     #[brw(magic(16u8))]
     MethodType(MethodTypeConstant),
+    #[brw(magic(17u8))]
+    Dynamic(DynamicConstant),
     #[brw(magic(18u8))]
     InvokeDynamic(InvokeDynamicConstant),
     #[brw(magic(19u8))]
@@ -143,6 +146,16 @@ pub struct MethodHandleConstant {
 #[binrw]
 pub struct MethodTypeConstant {
     pub descriptor_index: u16,
+}
+
+/// CONSTANT_Dynamic_info (JVMS §4.4.10). Unlike `InvokeDynamicConstant`, the
+/// referenced NameAndType carries a *field* descriptor: the type of the constant
+/// produced by the bootstrap method.
+#[derive(Clone, Debug)]
+#[binrw]
+pub struct DynamicConstant {
+    pub bootstrap_method_attr_index: u16,
+    pub name_and_type_index: u16,
 }
 
 #[derive(Clone, Debug)]

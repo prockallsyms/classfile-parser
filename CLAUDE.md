@@ -27,7 +27,7 @@ src/
 │   └── types.rs                # Instruction enum (200+ opcodes), LocalVariable* types (binrw)
 ├── constant_info/
 │   ├── mod.rs                  # Re-exports
-│   └── types.rs                # ConstantInfo enum with all 19 constant types (binrw)
+│   └── types.rs                # ConstantInfo enum with all 17 JVMS constant pool tags (binrw)
 ├── field_info/
 │   ├── mod.rs                  # Re-exports
 │   └── types.rs                # FieldInfo struct (binrw)
@@ -202,7 +202,7 @@ Prioritized list of missing features. Items marked [done] have been implemented.
 ## Current State
 
 ### What's done
-- All type structs: ClassFile, ConstantInfo (19 types including Module/Package), FieldInfo, MethodInfo, AttributeInfo, Instruction
+- All type structs: ClassFile, ConstantInfo (all 17 JVMS tags including Dynamic/Module/Package), FieldInfo, MethodInfo, AttributeInfo, Instruction
 - All 30 attribute variant types (including Module, ModulePackages, ModuleMainClass, NestHost, NestMembers, Record, PermittedSubclasses)
 - Custom BinRead for ClassFile (handles const pool Double/Long sentinel entries)
 - Full BinWrite support for all types (read-write round-trip verified)
@@ -214,7 +214,8 @@ Prioritized list of missing features. Items marked [done] have been implemented.
 - Compile P0 complete: string concat, typed arithmetic (long/float/double), for-each loops, type-aware arrays, expression type inference
 - Compile P1 complete: multi-catch, synchronized blocks, field assignment fix for cat-2 values, method resolution (invokeinterface, pool-based receiver inference, pool-based static detection, descriptor inference fallback for unknown methods)
 - Compile P2 complete: `var` keyword (type inference), switch expressions (arrow syntax), multi-dimensional arrays (multianewarray), generic type params (parse-and-discard), lambda expressions (invokedynamic + synthetic methods + bootstrap methods), method references
-- Constant pool helpers: `get_or_add_method_handle`, `get_or_add_method_type`, `get_or_add_invoke_dynamic`
+- Constant pool helpers: `get_or_add_method_handle`, `get_or_add_method_type`, `get_or_add_invoke_dynamic`, `get_or_add_dynamic`
+- CONSTANT_Dynamic (tag 17) parsed and written
 - JAR patching: `patch_jar_method!`, `patch_jar_class!`, `patch_jar!` macros with E2E tests
 - StackMapTable: VType resolution for reference-type locals (including parameters) uses constant pool indices; for-each loop variables allocated after loop-top label for correct frame generation; category-2 types (Long/Double) correctly omit implicit Top continuation slots in frame encoding
 - Method descriptor inference: `find_method_descriptor_in_pool()` falls back to `infer_method_descriptor()` for methods not in the pool, with well-known collection method signatures and heuristic return types

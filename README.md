@@ -328,6 +328,7 @@ fn main() {
     - [x] NameAndType
     - [x] MethodHandle
     - [x] MethodType
+    - [x] Dynamic
     - [x] InvokeDynamic
     - [x] Module
     - [x] Package
