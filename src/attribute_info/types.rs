@@ -1,4 +1,4 @@
-use std::io::{Cursor, Seek};
+use std::io::{Cursor, Read, Seek, Write};
 
 use binrw::{BinRead, BinResult, BinWrite, Endian, binrw, io::TakeSeekExt};
 
@@ -637,16 +637,133 @@ pub fn custom_char_writer(c: &char) -> BinResult<()> {
     Ok(())
 }
 
+/// A JVMS `element_value` (JVMS §4.7.16.1).
+///
+/// Every `element_value` begins with a 1-byte `tag` that selects the union
+/// member. This cannot be modeled with binrw's derive because the derived enum
+/// reader tries each variant in declaration order with no tag dispatch: the
+/// first variant (`ConstValueIndex`) reads *any* tag byte + `u16` and always
+/// succeeds, so array/enum/class/nested-annotation values were silently
+/// misparsed as const values (the array tag `[` read as a const tag, its
+/// element count read as the "value", and the real payload left unconsumed).
+/// The hand-written `BinRead`/`BinWrite` below dispatch on the tag byte.
 #[derive(Clone, Debug)]
-#[binrw]
-#[brw(big)]
 pub enum ElementValue {
-    // pub tag: u8,
     ConstValueIndex(ConstValueIndexValue),
     EnumConst(EnumConstValue),
     ClassInfoIndex(u16),
     AnnotationValue(RuntimeAnnotation),
     ElementArray(ElementArrayValue),
+}
+
+impl BinRead for ElementValue {
+    type Args<'a> = ();
+
+    fn read_options<R: Read + Seek>(
+        reader: &mut R,
+        _endian: Endian,
+        _args: Self::Args<'_>,
+    ) -> BinResult<Self> {
+        // element_value is always big-endian per JVMS; ignore the passed endian
+        // so `read()` (which passes little-endian by default) stays correct.
+        let endian = Endian::Big;
+        let mut tag_buf = [0u8; 1];
+        reader.read_exact(&mut tag_buf)?;
+        let tag = tag_buf[0] as char;
+        match tag {
+            // Primitive constants and Strings share a u2 const_value_index.
+            'B' | 'C' | 'D' | 'F' | 'I' | 'J' | 'S' | 'Z' | 's' => {
+                let value = u16::read_options(reader, endian, ())?;
+                Ok(ElementValue::ConstValueIndex(ConstValueIndexValue {
+                    tag,
+                    value,
+                }))
+            }
+            'e' => {
+                let type_name_index = u16::read_options(reader, endian, ())?;
+                let const_name_index = u16::read_options(reader, endian, ())?;
+                Ok(ElementValue::EnumConst(EnumConstValue {
+                    type_name_index,
+                    const_name_index,
+                }))
+            }
+            'c' => Ok(ElementValue::ClassInfoIndex(u16::read_options(
+                reader,
+                endian,
+                (),
+            )?)),
+            '@' => Ok(ElementValue::AnnotationValue(RuntimeAnnotation::read_options(
+                reader,
+                endian,
+                (),
+            )?)),
+            '[' => {
+                let num_values = u16::read_options(reader, endian, ())?;
+                let mut values = Vec::with_capacity(num_values as usize);
+                for _ in 0..num_values {
+                    values.push(ElementValue::read_options(reader, endian, ())?);
+                }
+                Ok(ElementValue::ElementArray(ElementArrayValue {
+                    num_values,
+                    values,
+                }))
+            }
+            other => Err(binrw::Error::AssertFail {
+                pos: reader.stream_position().unwrap_or(0),
+                message: format!("invalid element_value tag: {other:?}"),
+            }),
+        }
+    }
+}
+
+impl BinWrite for ElementValue {
+    type Args<'a> = ();
+
+    fn write_options<W: Write + Seek>(
+        &self,
+        writer: &mut W,
+        _endian: Endian,
+        _args: Self::Args<'_>,
+    ) -> BinResult<()> {
+        let endian = Endian::Big;
+        match self {
+            ElementValue::ConstValueIndex(cv) => {
+                writer.write_all(&[cv.tag as u8])?;
+                cv.value.write_options(writer, endian, ())?;
+            }
+            ElementValue::EnumConst(ec) => {
+                writer.write_all(b"e")?;
+                ec.type_name_index.write_options(writer, endian, ())?;
+                ec.const_name_index.write_options(writer, endian, ())?;
+            }
+            ElementValue::ClassInfoIndex(idx) => {
+                writer.write_all(b"c")?;
+                idx.write_options(writer, endian, ())?;
+            }
+            ElementValue::AnnotationValue(ann) => {
+                writer.write_all(b"@")?;
+                ann.write_options(writer, endian, ())?;
+            }
+            ElementValue::ElementArray(arr) => {
+                writer.write_all(b"[")?;
+                arr.num_values.write_options(writer, endian, ())?;
+                for v in &arr.values {
+                    v.write_options(writer, endian, ())?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// element_value is always big-endian, so it can be read/written with the
+// no-argument `read()` / `write()` helpers (used by the `try_read!` macro and
+// the AnnotationDefault serialization path).
+impl binrw::meta::ReadEndian for ElementValue {
+    const ENDIAN: binrw::meta::EndianKind = binrw::meta::EndianKind::Endian(Endian::Big);
+}
+impl binrw::meta::WriteEndian for ElementValue {
+    const ENDIAN: binrw::meta::EndianKind = binrw::meta::EndianKind::Endian(Endian::Big);
 }
 
 #[derive(Clone, Debug)]

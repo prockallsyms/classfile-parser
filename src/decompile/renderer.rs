@@ -1050,14 +1050,21 @@ impl JavaRenderer {
                 self.render_annotation_to_string(ann, out);
             }
             AnnotationValue::ArrayLiteral(values) => {
-                out.push('{');
-                for (i, v) in values.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
+                // A single-element array is equivalent to its bare element in
+                // annotation syntax (`@Foo("x")` == `@Foo({"x"})`); emit the
+                // idiomatic form. Empty and multi-element arrays keep braces.
+                if let [only] = values.as_slice() {
+                    self.render_annotation_value(only, out);
+                } else {
+                    out.push('{');
+                    for (i, v) in values.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        self.render_annotation_value(v, out);
                     }
-                    self.render_annotation_value(v, out);
+                    out.push('}');
                 }
-                out.push('}');
             }
         }
     }
