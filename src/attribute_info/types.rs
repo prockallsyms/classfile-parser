@@ -692,11 +692,9 @@ impl BinRead for ElementValue {
                 endian,
                 (),
             )?)),
-            '@' => Ok(ElementValue::AnnotationValue(RuntimeAnnotation::read_options(
-                reader,
-                endian,
-                (),
-            )?)),
+            '@' => Ok(ElementValue::AnnotationValue(
+                RuntimeAnnotation::read_options(reader, endian, ())?,
+            )),
             '[' => {
                 let num_values = u16::read_options(reader, endian, ())?;
                 let mut values = Vec::with_capacity(num_values as usize);
